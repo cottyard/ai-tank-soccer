@@ -359,7 +359,7 @@ describe('neural tank soccer strategy', () => {
     expect(baseline.ballProgress).toBeGreaterThan(inert.ballProgress);
   });
 
-  it('runs a short deterministic evolutionary training pass without 2v2 tank assumptions', () => {
+  it('runs a short deterministic evolutionary training pass without multi-tank assumptions', () => {
     const options = {
       baseWeights: defaultNeuralWeights(),
       seed: 11,
