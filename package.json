@@ -1,0 +1,22 @@
+{
+  "name": "ai-tank-soccer-2v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "sim": "tsx scripts/simulate.ts",
+    "train": "tsx scripts/train-neural.ts"
+  },
+  "dependencies": {
+    "lucide": "^0.468.0",
+    "vite": "^5.4.21"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}

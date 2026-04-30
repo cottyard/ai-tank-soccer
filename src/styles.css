@@ -1,0 +1,482 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0b1120;
+  color: #e5edf7;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  height: 100svh;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+}
+
+#app {
+  height: 100svh;
+  min-height: 0;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100svh;
+  min-height: 0;
+  background:
+    radial-gradient(circle at 16% 8%, rgba(34, 197, 94, 0.12), transparent 26rem),
+    linear-gradient(135deg, #0b1120 0%, #111827 46%, #10151f 100%);
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(8, 13, 24, 0.84);
+  backdrop-filter: blur(16px);
+}
+
+.strategy-name {
+  min-width: 0;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-name.red {
+  color: #fecdd3;
+}
+
+.strategy-name.blue {
+  justify-self: end;
+  color: #bfdbfe;
+}
+
+.scoreboard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.score {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 24px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.score.red {
+  color: #fb7185;
+}
+
+.score.blue {
+  color: #60a5fa;
+}
+
+.clock {
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 310px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.field-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.status-strip {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 36px);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  color: #dbeafe;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chip svg {
+  width: 15px;
+  height: 15px;
+}
+
+.side-panel {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px;
+  border-left: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(8, 13, 24, 0.72);
+  min-height: 0;
+  overflow: auto;
+}
+
+.section-title {
+  margin: 0 0 10px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  color: #e5edf7;
+  background: rgba(30, 41, 59, 0.82);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    transform 150ms ease;
+}
+
+.icon-button:hover {
+  border-color: rgba(226, 232, 240, 0.48);
+  background: rgba(51, 65, 85, 0.94);
+}
+
+.icon-button:active {
+  transform: translateY(1px);
+}
+
+.icon-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.learning-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.wide-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  color: #e5edf7;
+  background: rgba(30, 41, 59, 0.82);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.wide-button.learn {
+  border-color: rgba(45, 212, 191, 0.42);
+  color: #ccfbf1;
+  background: rgba(15, 118, 110, 0.42);
+}
+
+.wide-button:hover {
+  border-color: rgba(226, 232, 240, 0.48);
+  background: rgba(51, 65, 85, 0.94);
+}
+
+.wide-button:disabled,
+.icon-button:disabled {
+  cursor: wait;
+  opacity: 0.56;
+}
+
+.wide-button.learn:hover {
+  background: rgba(13, 148, 136, 0.55);
+}
+
+.wide-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.split-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.toggle-row {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.toggle input {
+  width: 42px;
+  height: 22px;
+  appearance: none;
+  border-radius: 999px;
+  background: #334155;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  cursor: pointer;
+  position: relative;
+}
+
+.toggle input::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  transition: transform 160ms ease;
+}
+
+.toggle input:checked {
+  background: #0f766e;
+}
+
+.toggle input:checked::after {
+  transform: translateX(20px);
+}
+
+.control-stack {
+  display: grid;
+  gap: 11px;
+}
+
+.team-mode {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.team-label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.team-label.red {
+  color: #fecdd3;
+}
+
+.team-label.blue {
+  color: #bfdbfe;
+}
+
+.control-select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  color: #e5edf7;
+  background: rgba(30, 41, 59, 0.82);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.control-select:focus {
+  outline: 2px solid rgba(96, 165, 250, 0.5);
+  outline-offset: 2px;
+}
+
+.manual-keys {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.key-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  color: #aebbd0;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.key-row.red > span:first-child {
+  color: #fda4af;
+}
+
+.key-row.blue > span:first-child {
+  color: #93c5fd;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-bottom-color: rgba(15, 23, 42, 0.9);
+  border-radius: 5px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.82);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.metric {
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.metric-label {
+  display: block;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 750;
+  margin-bottom: 4px;
+}
+
+.metric-value {
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.log {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.log-entry {
+  padding: 8px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.log-entry strong {
+  color: #f8fafc;
+}
+
+@media (max-width: 860px) {
+  body {
+    overflow: auto;
+    height: auto;
+    min-height: 100svh;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100svh;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 8px;
+  }
+
+  .strategy-name.blue {
+    justify-self: center;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(360px, 58svh) auto;
+    height: auto;
+    overflow: visible;
+  }
+
+  .side-panel {
+    border-left: 0;
+    border-top: 1px solid rgba(148, 163, 184, 0.22);
+  }
+}

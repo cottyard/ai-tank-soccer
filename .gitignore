@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+*.tsbuildinfo
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Local logs
+*.log
+vite-dev.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local machine files
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# User replay captures and local training artifacts
+browser-replay-*.json
+training-runs/
+docs/superpowers/
+
+# Native/Rust build artifacts
+target/
+trainer-rust/target/
+*.pdb
+*.ilk
+*.obj
+*.o
+
+# Editor state
+.vscode/
+.idea/
+*.swp
+*.swo
