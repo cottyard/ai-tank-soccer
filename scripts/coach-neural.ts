@@ -1,4 +1,7 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createNeuralStrategy } from '../src/ai/neuralStrategy';
 import { evaluateNeuralWeights } from '../src/ai/neuralTraining';
 import { NEURAL_WEIGHT_COUNT, defaultNeuralWeights, type NeuralWeights } from '../src/ai/neuralWeights';
@@ -8,6 +11,7 @@ import { POLICY_INPUT_COUNT } from '../src/ai/policyNetwork';
 import { trainSelfPlayPolicy } from '../src/ai/selfPlayTraining';
 import { trainPolicyGradientSelfPlay } from '../src/ai/policyGradientTraining';
 import { trainCurriculumPolicy } from '../src/ai/curriculumTraining';
+import { evaluateRuntimePolicy } from '../src/ai/policyGate';
 import { traditionalStrategy } from '../src/ai/traditionalStrategy';
 import { FIELD, createInitialState, type GameState, type Team } from '../src/game/model';
 import { simulateMatch } from '../src/game/match';
@@ -15,12 +19,14 @@ import { idleCommands, type Strategy } from '../src/game/strategy';
 
 declare const process: {
   argv: string[];
+  cwd(): string;
   exitCode?: number;
+  platform: string;
 };
 
 type OpponentName = 'idle' | 'traditional' | 'neural-default' | 'neural-self' | 'neural-current';
 type MetricPhase = 'eval' | 'train';
-type AcceptOpponentName = OpponentName | 'league';
+type AcceptOpponentName = OpponentName | 'league' | 'runtime';
 
 export type CoachOptions = {
   seed: number;
@@ -43,6 +49,8 @@ export type CoachOptions = {
   rlTemperature: number;
   rlDiscount: number;
   rlStartStateMode: 'open' | 'outcome-curriculum';
+  rlNative: boolean;
+  rlNativeBin?: string;
   curriculumScenarios: number;
   curriculumFrames: number;
   input?: string;
@@ -51,6 +59,8 @@ export type CoachOptions = {
   printWeights: boolean;
   acceptOpponent?: AcceptOpponentName;
   gateSeeds: number;
+  runtimeGateMatches: number;
+  runtimeGateFrames: number;
 };
 
 export type EvaluationSuiteOptions = {
@@ -92,6 +102,8 @@ export type WeightsMetadata = {
   loss: number;
   acceptOpponent?: AcceptOpponentName;
   gateSeeds?: number;
+  runtimeGateMatches?: number;
+  runtimeGateFrames?: number;
   acceptedCycles?: number;
   rejectedCycles?: number;
   replayAccepted?: boolean;
@@ -137,10 +149,13 @@ const DEFAULT_OPTIONS: CoachOptions = {
   rlTemperature: 1.08,
   rlDiscount: 0.992,
   rlStartStateMode: 'outcome-curriculum',
+  rlNative: false,
   curriculumScenarios: 0,
   curriculumFrames: 14,
   printWeights: false,
-  gateSeeds: 1
+  gateSeeds: 1,
+  runtimeGateMatches: 0,
+  runtimeGateFrames: 0
 };
 
 export function parseCoachArgs(argv: readonly string[]): CoachOptions {
@@ -165,6 +180,8 @@ export function parseCoachArgs(argv: readonly string[]): CoachOptions {
     rlTemperature: numberArg(argv, '--rl-temperature', DEFAULT_OPTIONS.rlTemperature),
     rlDiscount: clamp01(numberArg(argv, '--rl-discount', DEFAULT_OPTIONS.rlDiscount)),
     rlStartStateMode: startStateModeArg(argv, '--rl-start-state-mode', DEFAULT_OPTIONS.rlStartStateMode),
+    rlNative: argv.includes('--rl-native'),
+    rlNativeBin: stringArg(argv, '--rl-native-bin'),
     curriculumScenarios: nonNegativeIntegerArg(argv, '--curriculum-scenarios', DEFAULT_OPTIONS.curriculumScenarios),
     curriculumFrames: positiveIntegerArg(argv, '--curriculum-frames', DEFAULT_OPTIONS.curriculumFrames),
     input: stringArg(argv, '--input'),
@@ -172,7 +189,9 @@ export function parseCoachArgs(argv: readonly string[]): CoachOptions {
     output: stringArg(argv, '--output'),
     printWeights: argv.includes('--print-weights'),
     acceptOpponent: opponentArg(argv, '--accept-opponent'),
-    gateSeeds: positiveIntegerArg(argv, '--gate-seeds', DEFAULT_OPTIONS.gateSeeds)
+    gateSeeds: positiveIntegerArg(argv, '--gate-seeds', DEFAULT_OPTIONS.gateSeeds),
+    runtimeGateMatches: nonNegativeIntegerArg(argv, '--runtime-gate-matches', DEFAULT_OPTIONS.runtimeGateMatches),
+    runtimeGateFrames: nonNegativeIntegerArg(argv, '--runtime-gate-frames', DEFAULT_OPTIONS.runtimeGateFrames)
   };
 }
 
@@ -320,12 +339,16 @@ export function runCoach(options: CoachOptions): {
     replayScore = acceptanceScore(replayTraining.weights, options, 0, beforeReplayWeights);
     replayAccepted = replayScore === undefined || replayBaseline === undefined || replayScore > replayBaseline;
     weights = replayAccepted ? replayTraining.weights : beforeReplayWeights;
+    if (replayAccepted) {
+      bestWeights = [...weights];
+    }
     loss = replayTraining.loss;
     replaySamples += replayTraining.trainedSamples;
   }
 
   const initialRows = pushEvaluationMetrics(metrics, 0, weights, options, replaySamples, selfPlaySamples, loss);
   bestSelectionScore = selectionScore(initialRows);
+  bestWeights = [...weights];
 
   if (options.curriculumScenarios > 0) {
     const gateOpponentWeights = [...weights];
@@ -343,6 +366,7 @@ export function runCoach(options: CoachOptions): {
     const accepted = candidateScore === undefined || baselineScore === undefined || candidateScore > baselineScore;
     if (accepted) {
       weights = trained.weights;
+      bestWeights = [...weights];
       acceptedCycles += options.acceptOpponent ? 1 : 0;
     } else {
       rejectedCycles += 1;
@@ -391,6 +415,7 @@ export function runCoach(options: CoachOptions): {
     const accepted = candidateScore === undefined || baselineScore === undefined || candidateScore > baselineScore;
     if (accepted) {
       weights = trained.weights;
+      bestWeights = [...weights];
       acceptedCycles += options.acceptOpponent ? 1 : 0;
     } else {
       rejectedCycles += 1;
@@ -427,20 +452,7 @@ export function runCoach(options: CoachOptions): {
   for (let rlCycle = 1; rlCycle <= options.rlCycles; rlCycle += 1) {
     const cycle = options.cycles + rlCycle;
     const gateOpponentWeights = [...weights];
-    const trained = trainPolicyGradientSelfPlay({
-      weights,
-      opponentWeights: chooseSelfPlayOpponent(weights, bestWeights, rlCycle),
-      matches: options.rlMatches,
-      frames: options.rlFrames,
-      epochs: options.rlEpochs,
-      batchSize: options.rlBatchSize,
-      learningRate: options.rlLearningRate,
-      ppoClip: options.rlPpoClip,
-      temperature: options.rlTemperature,
-      discount: options.rlDiscount,
-      startStateMode: options.rlStartStateMode,
-      seed: options.seed + rlCycle * 1_000_033
-    });
+    const trained = trainPolicyGradientCycle(weights, chooseSelfPlayOpponent(weights, bestWeights, rlCycle), options, rlCycle);
     selfPlaySamples += trained.samples;
     loss = trained.loss;
 
@@ -449,6 +461,7 @@ export function runCoach(options: CoachOptions): {
     const accepted = candidateScore === undefined || baselineScore === undefined || candidateScore > baselineScore;
     if (accepted) {
       weights = trained.weights;
+      bestWeights = [...weights];
       acceptedCycles += options.acceptOpponent ? 1 : 0;
     } else {
       rejectedCycles += 1;
@@ -492,6 +505,8 @@ export function runCoach(options: CoachOptions): {
     loss,
     acceptOpponent: options.acceptOpponent,
     gateSeeds: options.gateSeeds,
+    runtimeGateMatches: runtimeGateMatches(options),
+    runtimeGateFrames: runtimeGateFrames(options),
     acceptedCycles,
     rejectedCycles,
     replayAccepted,
@@ -583,8 +598,18 @@ function acceptanceScore(
 
   let total = 0;
   for (let gateSeed = 0; gateSeed < options.gateSeeds; gateSeed += 1) {
+    const seed = options.seed + cycle * 16_381 + gateSeed * 1_000_003;
+    if (options.acceptOpponent === 'runtime') {
+      total += evaluateRuntimePolicy(weights, {
+        seed,
+        matches: runtimeGateMatches(options),
+        frames: runtimeGateFrames(options)
+      }).score;
+      continue;
+    }
+
     const rows = runEvaluationSuite(weights, {
-      seed: options.seed + cycle * 16_381 + gateSeed * 1_000_003,
+      seed,
       matches: options.evalMatches,
       frames: options.frames,
       fixedNeuralOpponentWeights
@@ -611,6 +636,14 @@ function leagueSelectionScore(rows: readonly EvaluationRow[]): number {
     opponentSelectionScore(rows, 'neural-current') * 0.42 +
     opponentSelectionScore(rows, 'neural-default') * 0.1
   );
+}
+
+function runtimeGateMatches(options: CoachOptions): number {
+  return options.runtimeGateMatches > 0 ? options.runtimeGateMatches : options.evalMatches;
+}
+
+function runtimeGateFrames(options: CoachOptions): number {
+  return options.runtimeGateFrames > 0 ? options.runtimeGateFrames : options.frames;
 }
 
 function runSeededMatches(
@@ -696,6 +729,175 @@ function chooseSelfPlayOpponent(
   cycle: number
 ): NeuralWeights {
   return cycle % 3 === 0 ? bestWeights : currentWeights;
+}
+
+function trainPolicyGradientCycle(
+  weights: NeuralWeights,
+  opponentWeights: NeuralWeights,
+  options: CoachOptions,
+  rlCycle: number
+): ReturnType<typeof trainPolicyGradientSelfPlay> {
+  const seed = options.seed + rlCycle * 1_000_033;
+  if (!options.rlNative) {
+    return trainPolicyGradientSelfPlay({
+      weights,
+      opponentWeights,
+      matches: options.rlMatches,
+      frames: options.rlFrames,
+      epochs: options.rlEpochs,
+      batchSize: options.rlBatchSize,
+      learningRate: options.rlLearningRate,
+      ppoClip: options.rlPpoClip,
+      temperature: options.rlTemperature,
+      discount: options.rlDiscount,
+      startStateMode: options.rlStartStateMode,
+      seed
+    });
+  }
+
+  return runNativePolicyGradientCycle(weights, opponentWeights, {
+    seed,
+    matches: options.rlMatches,
+    frames: options.rlFrames,
+    epochs: options.rlEpochs,
+    batchSize: options.rlBatchSize,
+    learningRate: options.rlLearningRate,
+    ppoClip: options.rlPpoClip,
+    temperature: options.rlTemperature,
+    discount: options.rlDiscount,
+    startStateMode: options.rlStartStateMode,
+    nativeBin: options.rlNativeBin
+  });
+}
+
+function runNativePolicyGradientCycle(
+  weights: NeuralWeights,
+  opponentWeights: NeuralWeights,
+  options: {
+    seed: number;
+    matches: number;
+    frames: number;
+    epochs: number;
+    batchSize: number;
+    learningRate: number;
+    ppoClip: number;
+    temperature: number;
+    discount: number;
+    startStateMode: 'open' | 'outcome-curriculum';
+    nativeBin?: string;
+  }
+): ReturnType<typeof trainPolicyGradientSelfPlay> {
+  const nativeBin = resolveNativeTrainer(options.nativeBin);
+  const workdir = mkdtempSync(join(tmpdir(), 'soccer-coach-native-rl-'));
+  const weightsPath = join(workdir, 'weights.json');
+  const opponentPath = join(workdir, 'opponent.json');
+  const outputPath = join(workdir, 'trained.json');
+  const metricsPath = join(workdir, 'metrics.json');
+  const args = [
+    '--mode',
+    'policy-gradient',
+    '--weights',
+    weightsPath,
+    '--output',
+    outputPath,
+    '--metrics-output',
+    metricsPath,
+    '--seed',
+    String(options.seed),
+    '--matches',
+    String(options.matches),
+    '--frames',
+    String(options.frames),
+    '--epochs',
+    String(options.epochs),
+    '--batch-size',
+    String(options.batchSize),
+    '--learning-rate',
+    String(options.learningRate),
+    '--ppo-clip',
+    String(options.ppoClip),
+    '--temperature',
+    String(options.temperature),
+    '--discount',
+    String(options.discount),
+    '--start-state-mode',
+    options.startStateMode
+  ];
+
+  writeFileSync(weightsPath, JSON.stringify({ weights }), 'utf8');
+  if (opponentWeights !== weights) {
+    writeFileSync(opponentPath, JSON.stringify({ weights: opponentWeights }), 'utf8');
+    args.push('--opponent-weights', opponentPath);
+  }
+  execFileSync(nativeBin, args, { stdio: 'pipe' });
+
+  const trainedWeights = loadWeightsPayload(readFileSync(outputPath, 'utf8'));
+  const metrics = parseNativePolicyGradientMetrics(readFileSync(metricsPath, 'utf8'));
+  const finalState = createInitialState();
+  finalState.frame = metrics.frames;
+  finalState.time = metrics.frames / 30;
+  finalState.score = { red: metrics.redGoals, blue: metrics.blueGoals };
+  finalState.ball.position = {
+    x: metrics.finalBallX,
+    y: metrics.finalBallY
+  };
+
+  return {
+    weights: trainedWeights,
+    loss: metrics.loss,
+    trainedSamples: metrics.trainedSamples,
+    samples: metrics.samples,
+    frames: metrics.frames,
+    redGoals: metrics.redGoals,
+    blueGoals: metrics.blueGoals,
+    finalState
+  };
+}
+
+function resolveNativeTrainer(nativeBin: string | undefined): string {
+  if (nativeBin) {
+    return nativeBin;
+  }
+
+  const defaultPath = join(process.cwd(), 'trainer-rust', 'target', 'release', process.platform === 'win32'
+    ? 'soccer-policy-trainer.exe'
+    : 'soccer-policy-trainer');
+  if (existsSync(defaultPath)) {
+    return defaultPath;
+  }
+
+  throw new Error('Native trainer not found. Build trainer-rust or pass --rl-native-bin.');
+}
+
+function parseNativePolicyGradientMetrics(json: string): {
+  samples: number;
+  trainedSamples: number;
+  frames: number;
+  redGoals: number;
+  blueGoals: number;
+  loss: number;
+  finalBallX: number;
+  finalBallY: number;
+} {
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  return {
+    samples: finiteMetric(parsed, 'samples'),
+    trainedSamples: finiteMetric(parsed, 'trainedSamples'),
+    frames: finiteMetric(parsed, 'frames'),
+    redGoals: finiteMetric(parsed, 'redGoals'),
+    blueGoals: finiteMetric(parsed, 'blueGoals'),
+    loss: finiteMetric(parsed, 'loss'),
+    finalBallX: finiteMetric(parsed, 'finalBallX'),
+    finalBallY: finiteMetric(parsed, 'finalBallY')
+  };
+}
+
+function finiteMetric(record: Record<string, unknown>, field: string): number {
+  const value = record[field];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Native trainer metrics missing finite ${field}`);
+  }
+  return value;
 }
 
 function createSeededInitialState(seed: number, match: number, team: Team): GameState {
@@ -784,7 +986,8 @@ function opponentArg(argv: readonly string[], name: string): AcceptOpponentName 
     value === 'neural-default' ||
     value === 'neural-self' ||
     value === 'neural-current' ||
-    value === 'league'
+    value === 'league' ||
+    value === 'runtime'
     ? value
     : undefined;
 }

@@ -33,7 +33,10 @@ describe('policy-gradient CLI trainer', () => {
       '--discount',
       '0.97',
       '--start-state-mode',
-      'open'
+      'open',
+      '--native',
+      '--native-bin',
+      'trainer-rust/target/release/soccer-policy-trainer.exe'
     ]);
 
     expect(options).toMatchObject({
@@ -49,7 +52,9 @@ describe('policy-gradient CLI trainer', () => {
       ppoClip: 0.18,
       temperature: 1.15,
       discount: 0.97,
-      startStateMode: 'open'
+      startStateMode: 'open',
+      native: true,
+      nativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe'
     });
   });
 

@@ -1,11 +1,20 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { loadWeightsPayload, serializeWeightsPayload } from './coach-neural';
-import { trainPolicyGradientSelfPlay } from '../src/ai/policyGradientTraining';
+import {
+  trainPolicyGradientSelfPlay,
+  type PolicyGradientTrainingResult
+} from '../src/ai/policyGradientTraining';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
+import { createInitialState } from '../src/game/model';
 
 declare const process: {
   argv: string[];
+  cwd(): string;
   exitCode?: number;
+  platform: string;
 };
 
 type PolicyGradientCliOptions = {
@@ -22,6 +31,8 @@ type PolicyGradientCliOptions = {
   temperature: number;
   discount: number;
   startStateMode: 'open' | 'outcome-curriculum';
+  native: boolean;
+  nativeBin?: string;
 };
 
 const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
@@ -34,7 +45,8 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   ppoClip: 0.2,
   temperature: 1.08,
   discount: 0.992,
-  startStateMode: 'outcome-curriculum'
+  startStateMode: 'outcome-curriculum',
+  native: false
 };
 
 export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradientCliOptions {
@@ -51,11 +63,17 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     ppoClip: Math.max(0, numberArg(argv, '--ppo-clip', DEFAULT_OPTIONS.ppoClip)),
     temperature: Math.max(0.05, numberArg(argv, '--temperature', DEFAULT_OPTIONS.temperature)),
     discount: clamp01(numberArg(argv, '--discount', DEFAULT_OPTIONS.discount)),
-    startStateMode: startStateModeArg(argv, '--start-state-mode', DEFAULT_OPTIONS.startStateMode)
+    startStateMode: startStateModeArg(argv, '--start-state-mode', DEFAULT_OPTIONS.startStateMode),
+    native: argv.includes('--native'),
+    nativeBin: stringArg(argv, '--native-bin')
   };
 }
 
-export function runPolicyGradientCli(options: PolicyGradientCliOptions): ReturnType<typeof trainPolicyGradientSelfPlay> {
+export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyGradientTrainingResult {
+  if (options.native) {
+    return runNativePolicyGradientCli(options);
+  }
+
   const weights = options.input
     ? loadWeightsPayload(readFileSync(options.input, 'utf8'))
     : defaultNeuralWeights();
@@ -97,6 +115,117 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): ReturnT
   }
 
   return result;
+}
+
+function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGradientTrainingResult {
+  const nativeBin = resolveNativeTrainer(options.nativeBin);
+  const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-gradient-native-'));
+  const weightsPath = options.input ?? join(workdir, 'weights.json');
+  const outputPath = options.output ?? join(workdir, 'trained.json');
+  const metricsPath = options.metricsOutput ?? join(workdir, 'metrics.json');
+
+  if (!options.input) {
+    writeFileSync(weightsPath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
+  }
+
+  execFileSync(nativeBin, [
+    '--mode',
+    'policy-gradient',
+    '--weights',
+    weightsPath,
+    '--output',
+    outputPath,
+    '--metrics-output',
+    metricsPath,
+    '--seed',
+    String(options.seed),
+    '--matches',
+    String(options.matches),
+    '--frames',
+    String(options.frames),
+    '--epochs',
+    String(options.epochs),
+    '--batch-size',
+    String(options.batchSize),
+    '--learning-rate',
+    String(options.learningRate),
+    '--ppo-clip',
+    String(options.ppoClip),
+    '--temperature',
+    String(options.temperature),
+    '--discount',
+    String(options.discount),
+    '--start-state-mode',
+    options.startStateMode
+  ], { stdio: 'pipe' });
+
+  const weights = loadWeightsPayload(readFileSync(outputPath, 'utf8'));
+  const metrics = parseNativeMetrics(readFileSync(metricsPath, 'utf8'));
+  const finalState = createInitialState();
+  finalState.frame = metrics.frames;
+  finalState.time = metrics.frames / 30;
+  finalState.score = { red: metrics.redGoals, blue: metrics.blueGoals };
+  finalState.ball.position = {
+    x: metrics.finalBallX,
+    y: metrics.finalBallY
+  };
+
+  return {
+    weights,
+    loss: metrics.loss,
+    trainedSamples: metrics.trainedSamples,
+    samples: metrics.samples,
+    frames: metrics.frames,
+    redGoals: metrics.redGoals,
+    blueGoals: metrics.blueGoals,
+    finalState
+  };
+}
+
+function resolveNativeTrainer(nativeBin: string | undefined): string {
+  if (nativeBin) {
+    return nativeBin;
+  }
+
+  const defaultPath = join(process.cwd(), 'trainer-rust', 'target', 'release', process.platform === 'win32'
+    ? 'soccer-policy-trainer.exe'
+    : 'soccer-policy-trainer');
+  if (existsSync(defaultPath)) {
+    return defaultPath;
+  }
+
+  throw new Error('Native trainer not found. Build trainer-rust or pass --native-bin.');
+}
+
+function parseNativeMetrics(json: string): {
+  samples: number;
+  trainedSamples: number;
+  frames: number;
+  redGoals: number;
+  blueGoals: number;
+  loss: number;
+  finalBallX: number;
+  finalBallY: number;
+} {
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  return {
+    samples: finiteNumberField(parsed, 'samples'),
+    trainedSamples: finiteNumberField(parsed, 'trainedSamples'),
+    frames: finiteNumberField(parsed, 'frames'),
+    redGoals: finiteNumberField(parsed, 'redGoals'),
+    blueGoals: finiteNumberField(parsed, 'blueGoals'),
+    loss: finiteNumberField(parsed, 'loss'),
+    finalBallX: finiteNumberField(parsed, 'finalBallX'),
+    finalBallY: finiteNumberField(parsed, 'finalBallY')
+  };
+}
+
+function finiteNumberField(record: Record<string, unknown>, field: string): number {
+  const value = record[field];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`Native trainer metrics missing finite ${field}`);
+  }
+  return value;
 }
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {

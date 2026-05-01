@@ -29,9 +29,13 @@ describe('coach neural harness', () => {
       '--epochs',
       '5',
       '--accept-opponent',
-      'league',
+      'runtime',
       '--gate-seeds',
       '3',
+      '--runtime-gate-matches',
+      '5',
+      '--runtime-gate-frames',
+      '420',
       '--curriculum-scenarios',
       '24',
       '--curriculum-frames',
@@ -56,6 +60,9 @@ describe('coach neural harness', () => {
       '0.98',
       '--rl-start-state-mode',
       'open',
+      '--rl-native',
+      '--rl-native-bin',
+      'trainer-rust/target/release/soccer-policy-trainer.exe',
       '--input',
       'in.json',
       '--replay',
@@ -72,8 +79,10 @@ describe('coach neural harness', () => {
       selfPlayMatches: 4,
       selfPlayFrames: 60,
       epochs: 5,
-      acceptOpponent: 'league',
+      acceptOpponent: 'runtime',
       gateSeeds: 3,
+      runtimeGateMatches: 5,
+      runtimeGateFrames: 420,
       curriculumScenarios: 24,
       curriculumFrames: 10,
       rlCycles: 2,
@@ -86,6 +95,8 @@ describe('coach neural harness', () => {
       rlTemperature: 1.2,
       rlDiscount: 0.98,
       rlStartStateMode: 'open',
+      rlNative: true,
+      rlNativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe',
       input: 'in.json',
       replay: 'replay.json',
       output: 'out.json'
@@ -257,6 +268,30 @@ describe('coach neural harness', () => {
     expect(result.weights).toEqual(defaultNeuralWeights());
   });
 
+  it('can gate candidates against the browser runtime policy score', () => {
+    const result = runCoach({
+      ...parseCoachArgs(['--accept-opponent', 'runtime']),
+      seed: 41,
+      cycles: 1,
+      evalMatches: 1,
+      frames: 6,
+      selfPlayMatches: 1,
+      selfPlayFrames: 6,
+      epochs: 0,
+      batchSize: 8
+    });
+    const trainMetric = result.metrics.find((metric) => metric.phase === 'train');
+
+    expect(trainMetric?.accepted).toBe(false);
+    expect(trainMetric?.acceptOpponent).toBe('runtime');
+    expect(trainMetric?.acceptScore).toBeCloseTo(trainMetric?.acceptBaseline ?? NaN, 8);
+    expect(result.weights).toEqual(defaultNeuralWeights());
+    expect(result.metadata.acceptOpponent).toBe('runtime');
+    expect(result.metadata.runtimeGateMatches).toBe(1);
+    expect(result.metadata.runtimeGateFrames).toBe(6);
+    expect(result.metadata.rejectedCycles).toBe(1);
+  });
+
   it('can run gated curriculum training without replacing weights on a failed gate', () => {
     const result = runCoach({
       ...parseCoachArgs(['--accept-opponent', 'traditional']),
@@ -303,6 +338,35 @@ describe('coach neural harness', () => {
     expect(result.metadata.rejectedCycles).toBe(1);
   });
 
+  it('can run a tiny sparse-reward native policy-gradient cycle through the coach harness', () => {
+    const nativeTrainer = process.env.SOCCER_NATIVE_TRAINER;
+    if (!nativeTrainer) {
+      return;
+    }
+
+    const result = runCoach({
+      ...parseCoachArgs(['--accept-opponent', 'league']),
+      seed: 37,
+      cycles: 0,
+      rlCycles: 1,
+      rlMatches: 1,
+      rlFrames: 12,
+      rlEpochs: 1,
+      rlBatchSize: 4,
+      rlLearningRate: 0.004,
+      rlNative: true,
+      rlNativeBin: nativeTrainer,
+      evalMatches: 1,
+      frames: 6
+    });
+    const trainMetric = result.metrics.find((metric) => metric.phase === 'train');
+
+    expect(trainMetric?.selfPlaySamples).toBeGreaterThan(0);
+    expect(trainMetric?.replaySamples).toBe(0);
+    expect(trainMetric?.accepted).toBe(false);
+    expect(result.weights).toEqual(defaultNeuralWeights());
+  });
+
   it('does not keep replay pretraining that fails the traditional gate', () => {
     const path = 'training-runs/test-replay-reject.json';
     const sample = {
@@ -338,6 +402,40 @@ describe('coach neural harness', () => {
     expect(result.weights).toEqual(defaultNeuralWeights());
     expect(result.metadata.replayAccepted).toBe(false);
     expect(result.metadata.replaySamples).toBe(1);
+  });
+
+  it('keeps accepted replay pretraining weights when no gate is configured', () => {
+    const path = 'training-runs/test-replay-accept.json';
+    const sample = {
+      inputs: Array.from({ length: 36 }, (_, index) => index === 34 ? 1 : 0),
+      actionIndex: 8,
+      team: 'red' as const,
+      frame: 0,
+      tags: ['finish' as const],
+      weight: 3
+    };
+    writeFileSync(path, JSON.stringify({ samples: [sample] }), 'utf8');
+
+    const result = (() => {
+      try {
+        return runCoach({
+          ...parseCoachArgs([]),
+          replay: path,
+          seed: 19,
+          cycles: 0,
+          evalMatches: 1,
+          frames: 6,
+          epochs: 1,
+          batchSize: 1,
+          learningRate: 0.02
+        });
+      } finally {
+        unlinkSync(path);
+      }
+    })();
+
+    expect(result.metadata.replayAccepted).toBe(true);
+    expect(result.weights).not.toEqual(defaultNeuralWeights());
   });
 
   it('rejects malformed weight payloads with the expected network size', () => {

@@ -14,6 +14,14 @@ The current practical objective is:
 
 The user's observed target is simple and concrete: the AI should become a strong opponent in live browser matches, including kickoff contests, loose-ball recovery, corner fights, defense after losing possession, and stamina management.
 
+Project-level autonomy:
+
+- The only overriding purpose of this repository is to train a stronger tank AI.
+- The user does not need to approve or confirm technical details, algorithm choices, implementation tactics, or training pipeline decisions.
+- The agent should make those decisions autonomously when they serve the goal of stronger AI, then implement, verify, and report the outcome.
+- Ask the user only when a decision changes the product goal, risks data loss, exposes private data, requires external spending, or conflicts with an explicit user instruction.
+- This autonomy does not relax quality gates: accepted playable weights still require deterministic gate improvement before replacing `public/models/neural-best.json`.
+
 ## Current System Shape
 
 The browser runtime is TypeScript and Vite. The game simulation is in `src/game`, and AI code is in `src/ai`.
@@ -177,6 +185,32 @@ npx tsx scripts/train-policy-gradient.ts `
   --start-state-mode outcome-curriculum
 ```
 
+Build the Rust trainer:
+
+```powershell
+cargo build --release --manifest-path trainer-rust/Cargo.toml
+```
+
+Run sparse-reward PPO self-play through the native Rust sampler/trainer:
+
+```powershell
+npx tsx scripts/train-policy-gradient.ts `
+  --native `
+  --input public/models/neural-best.json `
+  --output training-runs/neural-pg-rust-candidate.json `
+  --metrics-output training-runs/neural-pg-rust-candidate-metrics.json `
+  --seed 20260502 `
+  --matches 240 `
+  --frames 240 `
+  --epochs 4 `
+  --batch-size 128 `
+  --learning-rate 0.0045 `
+  --ppo-clip 0.2 `
+  --temperature 1.12 `
+  --discount 0.992 `
+  --start-state-mode outcome-curriculum
+```
+
 Run coach harness with RL cycles and league gate:
 
 ```powershell
@@ -189,6 +223,28 @@ npx tsx scripts/coach-neural.ts `
   --rl-frames 240 `
   --rl-epochs 4 `
   --rl-batch-size 64 `
+  --rl-learning-rate 0.0045 `
+  --rl-ppo-clip 0.2 `
+  --rl-temperature 1.12 `
+  --rl-discount 0.992 `
+  --rl-start-state-mode outcome-curriculum `
+  --accept-opponent league `
+  --gate-seeds 3
+```
+
+Run coach harness with Rust native RL cycles and league gate:
+
+```powershell
+npx tsx scripts/coach-neural.ts `
+  --input public/models/neural-best.json `
+  --output training-runs/neural-rl-rust-gated-candidate.json `
+  --cycles 0 `
+  --rl-cycles 1 `
+  --rl-native `
+  --rl-matches 240 `
+  --rl-frames 240 `
+  --rl-epochs 4 `
+  --rl-batch-size 128 `
   --rl-learning-rate 0.0045 `
   --rl-ppo-clip 0.2 `
   --rl-temperature 1.12 `
