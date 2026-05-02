@@ -167,7 +167,16 @@ npx tsx scripts/promote-policy-gradient.ts
 
 This trains a candidate from `public/models/neural-best.json`, samples native PPO opponents from a weighted league, uses the learned value baseline for sparse-return variance reduction, cycles mixed starts across open, outcome-curriculum, own-goal defense, corner fights, and loose-ball contests, runs the standard runtime gate and then the holdout runtime gate, writes `training-runs/neural-promotion-summary-s2026050208.json`, appends a compact entry to `training-runs/neural-promotion-history.jsonl`, and replaces `public/models/neural-best.json` only if both gates pass without meaningful goals or win-proxy regression. Use `--no-promote` for a dry run.
 
-Latest result: the 2026-05-02 default `learned` baseline + weighted `league` opponent promotion attempt was rejected at the standard gate. Current accepted model: goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270`; candidate: goals `9-1`, `avgScore=265.482`, `avgWin=0.700`, `avgBp=0.275`. De-prioritize this exact recipe until it is modified; keep learned baselines and league sampling available as diagnostics or targeted variants.
+Recent 2026-05-02 rejected promotion attempts:
+
+| Seed | Variant | Candidate Standard Gate | Decision |
+| --- | --- | --- | --- |
+| `2026050208` | `learned` baseline + weighted `league` opponent, `lr=0.001`, `epochs=2` | goals `9-1`, `avgScore=265.482`, `avgWin=0.700`, `avgBp=0.275` versus current goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | Reject; de-prioritize this exact recipe until modified. |
+| `2026050209` | `start-team-time` baseline + `self` opponent, `lr=0.001`, `epochs=2` | goals `10-1`, `avgScore=290.814`, `avgWin=0.675`, `avgBp=0.268` | Reject; closer on goals but still lower score/win proxy. |
+| `2026050210` | same as above with `lr=0.0005` | goals `8-1`, `avgScore=238.851`, `avgWin=0.675`, `avgBp=0.293` | Reject; reducing learning rate alone made gate performance worse. |
+| `2026050211` | same as above with `epochs=1` | goals `8-1`, `avgScore=237.964`, `avgWin=0.675`, `avgBp=0.282` | Reject; reducing epochs alone made gate performance worse. |
+
+Internet research via `http://127.0.0.1:10808` found two immediately testable ideas from primary sources: PPO's clipped surrogate is intended to support multiple minibatch epochs but remains hyperparameter-sensitive ([Schulman et al. 2017](https://arxiv.org/abs/1707.06347)); Population Based Training searches hyperparameters and schedules under a fixed budget instead of relying on one fixed recipe ([Jaderberg et al. 2017](https://arxiv.org/abs/1711.09846)). For this project, prefer a small promotion-oriented PBT/grid runner over more one-off full-length runs. MuZero-style learned-model planning ([Schrittwieser et al. 2019](https://arxiv.org/abs/1911.08265)) is too large a jump for the current codebase and should stay out of the near-term path.
 
 League opponents can include the current accepted model, extra snapshots, and a low-weight traditional stabilizer:
 
@@ -178,12 +187,32 @@ npx tsx scripts/promote-policy-gradient.ts `
   --league-traditional-weight 0.15
 ```
 
+Short promotion-oriented PPO grid search:
+
+```powershell
+npx tsx scripts/search-policy-gradient.ts `
+  --seed 2026050212 `
+  --matches 240 `
+  --frames 180 `
+  --gate-matches 2 `
+  --gate-frames 360 `
+  --learning-rates 0.001,0.0008,0.0006 `
+  --epochs-list 1,2 `
+  --ppo-clips 0.08,0.12,0.16 `
+  --temperatures 1.0,1.1 `
+  --advantage-baseline start-team-time `
+  --opponent-mode self
+```
+
+This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
+
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Try the conservative accepted-model recipe first: native PPO, mixed starts, runtime actions, `start-team-time` baseline, and self-play opponent. Use the automated promotion loop with explicit overrides so any successful candidate still has to pass both gates.
-2. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
+1. Add a small promotion-oriented PBT/grid runner that launches short native PPO variants from the current accepted model, records standard-gate deltas, and only sends the best survivors to full promotion gates. Initial search axes: `learning-rate`, `epochs`, `ppo-clip`, `temperature`, and possibly start-family weights.
+2. Keep learned baselines and weighted league sampling available, but treat them as variants to search rather than defaults.
+3. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 
 Avoid spending mainline time on output-bias hill climbing, stamina-threshold tuning, or local black-box weight probes. They overfit quickly and should remain diagnostics only.
 
