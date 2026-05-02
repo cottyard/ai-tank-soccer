@@ -307,6 +307,83 @@ describe('policy-gradient promotion loop', () => {
     });
   });
 
+  it('can gate and promote an existing search candidate without retraining it', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-promotion-existing-'));
+    const bestPath = join(workdir, 'best.json');
+    const candidatePath = join(workdir, 'candidate.json');
+    const historyPath = join(workdir, 'history.jsonl');
+    const baseline = scoredWeights(10);
+    const candidate = scoredWeights(12);
+    let trainCalls = 0;
+    writeFileSync(bestPath, weightsJson(baseline, 1), 'utf8');
+    writeFileSync(candidatePath, JSON.stringify({
+      weights: candidate,
+      metadata: {
+        seed: 23,
+        epochs: 1,
+        batchSize: 96,
+        learningRate: 0.0008,
+        ppoClip: 0.16,
+        temperature: 1,
+        discount: 0.995,
+        startStateMode: 'mixed',
+        advantageBaseline: 'start-team-time',
+        actionMode: 'runtime',
+        opponentMode: 'self',
+        trainer: 'rust-policy-gradient'
+      }
+    }), 'utf8');
+
+    const result = runPromotionLoop({
+      ...parsePromotionLoopArgs([
+        '--best',
+        bestPath,
+        '--candidate-input',
+        candidatePath,
+        '--history-output',
+        historyPath
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83]
+    }, {
+      train: () => {
+        trainCalls += 1;
+        throw new Error('candidate input should not retrain');
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(trainCalls).toBe(0);
+    expect(result.promoted).toBe(true);
+    expect(result.candidatePath).toBe(candidatePath);
+    expect(result.candidateMetricsPath).toBeUndefined();
+    expect(result.training).toMatchObject({
+      seed: 23,
+      epochs: 1,
+      batchSize: 96,
+      learningRate: 0.0008,
+      ppoClip: 0.16,
+      temperature: 1,
+      discount: 0.995,
+      advantageBaseline: 'start-team-time',
+      opponentMode: 'self'
+    });
+    expect(JSON.parse(readFileSync(bestPath, 'utf8'))).toMatchObject({ weights: candidate });
+    const history = JSON.parse(readFileSync(historyPath, 'utf8')) as {
+      candidateMetricsPath?: string;
+    };
+    expect(history.candidateMetricsPath).toBeUndefined();
+    expect(history).toMatchObject({
+      candidatePath,
+      seed: 23,
+      advantageBaseline: 'start-team-time',
+      opponentMode: 'self',
+      epochs: 1,
+      batchSize: 96,
+      learningRate: 0.0008
+    });
+  });
+
   it('rejects score improvements that regress win proxy beyond tolerance', () => {
     const current: PromotionLoopEvaluation = {
       score: 100,

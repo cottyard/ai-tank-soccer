@@ -206,11 +206,23 @@ npx tsx scripts/search-policy-gradient.ts `
 
 This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
 
+Evaluate a search survivor through the full promotion gates without retraining it:
+
+```powershell
+npx tsx scripts/promote-policy-gradient.ts `
+  --candidate-input training-runs/policy-gradient-search-s2026050217/v01-lr0p001-e1-clip0p12-t1p1.json `
+  --summary-output training-runs/neural-promotion-search-survivor-summary-s2026050217.json
+```
+
+Search notes: a too-short `gate-frames=240` search produced no goals and no ranking signal, so short searches should keep the full `gate-frames=600` when possible. The `2026050217` two-variant search (`matches=120`, `frames=120`, full standard gate) found `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.1` with standard delta `+0.447`, goals unchanged at `11-1`, and holdout unchanged at goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289`. The full `--candidate-input` promotion check rejected it because the holdout score did not improve. Keep this as a non-regressing survivor and useful search signal, not an accepted promotion.
+
+When using `--candidate-input`, the promotion loop reads the candidate weight metadata for seed, baseline, opponent mode, epochs, batch size, learning rate, clip, temperature, discount, start mode, and action mode. This keeps promotion summaries and history tied to the actual search candidate instead of the promotion loop's default training recipe.
+
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Add a small promotion-oriented PBT/grid runner that launches short native PPO variants from the current accepted model, records standard-gate deltas, and only sends the best survivors to full promotion gates. Initial search axes: `learning-rate`, `epochs`, `ppo-clip`, `temperature`, and possibly start-family weights.
+1. Expand search toward candidates that improve holdout, not just standard: run small full-gate searches over `ppo-clip`, `temperature`, and random seed while keeping `gate-frames=600`.
 2. Keep learned baselines and weighted league sampling available, but treat them as variants to search rather than defaults.
 3. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 

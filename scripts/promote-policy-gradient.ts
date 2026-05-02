@@ -43,6 +43,7 @@ export type PromotionLoopSeedResult = {
 
 export type PromotionLoopOptions = {
   bestPath: string;
+  candidateInputPath?: string;
   candidatePath: string;
   candidateMetricsPath?: string;
   summaryPath: string;
@@ -85,11 +86,15 @@ const DEFAULT_HOLDOUT_SEEDS = [83, 97, 109, 127, 149];
 
 export function parsePromotionLoopArgs(argv: readonly string[]): PromotionLoopOptions {
   const seed = integerArg(argv, '--seed', DEFAULT_SEED);
+  const candidateInputPath = stringArg(argv, '--candidate-input');
   return {
     bestPath: stringArg(argv, '--best') ?? 'public/models/neural-best.json',
-    candidatePath: stringArg(argv, '--candidate-output') ??
+    candidateInputPath,
+    candidatePath: candidateInputPath ?? stringArg(argv, '--candidate-output') ??
       `training-runs/neural-pg-promotion-candidate-s${seed}.json`,
-    candidateMetricsPath: stringArg(argv, '--candidate-metrics-output') ??
+    candidateMetricsPath: candidateInputPath
+      ? stringArg(argv, '--candidate-metrics-output')
+      : stringArg(argv, '--candidate-metrics-output') ??
       `training-runs/neural-pg-promotion-candidate-metrics-s${seed}.json`,
     summaryPath: stringArg(argv, '--summary-output') ??
       `training-runs/neural-promotion-summary-s${seed}.json`,
@@ -122,8 +127,10 @@ export function runPromotionLoop(
     const candidateMetricsPath = options.candidateMetricsPath
       ? iterationPath(options.candidateMetricsPath, iteration, options.iterations)
       : undefined;
-    ensureParentDirectory(candidatePath);
-    if (candidateMetricsPath) {
+    if (!options.candidateInputPath) {
+      ensureParentDirectory(candidatePath);
+    }
+    if (!options.candidateInputPath && candidateMetricsPath) {
       ensureParentDirectory(candidateMetricsPath);
     }
 
@@ -134,10 +141,18 @@ export function runPromotionLoop(
       output: candidatePath,
       metricsOutput: candidateMetricsPath
     };
-    const trained = train(training);
-    const candidateWeights = existsSync(candidatePath)
-      ? loadWeightsPayload(readFileSync(candidatePath, 'utf8'))
-      : [...trained.weights];
+    const trained = options.candidateInputPath ? undefined : train(training);
+    const candidatePayload = existsSync(candidatePath)
+      ? readFileSync(candidatePath, 'utf8')
+      : undefined;
+    const candidateWeights = candidatePayload
+      ? loadWeightsPayload(candidatePayload)
+      : trained
+        ? [...trained.weights]
+        : loadWeightsPayload(readFileSync(requiredCandidateInputPath(options), 'utf8'));
+    const resultTraining = options.candidateInputPath && candidatePayload
+      ? trainingFromCandidateMetadata(training, candidatePayload)
+      : training;
     const standard = evaluateGate('standard', currentWeights, candidateWeights, options.standardSeeds, options, evaluate);
     const holdout = standard.accepted
       ? evaluateGate('holdout', currentWeights, candidateWeights, options.holdoutSeeds, options, evaluate)
@@ -161,7 +176,7 @@ export function runPromotionLoop(
       historyPath: options.historyPath,
       standard,
       holdout,
-      training
+      training: resultTraining
     };
     writeSummary(options.summaryPath, result);
     if (options.historyPath) {
@@ -179,8 +194,8 @@ export function runPromotionLoop(
           selectionScore: holdout.candidate.score,
           seed: options.seed + iteration - 1,
           replaySamples: 0,
-          selfPlaySamples: trained.samples,
-          loss: trained.loss
+          selfPlaySamples: trained?.samples ?? 0,
+          loss: trained?.loss ?? 0
         });
       writeFileSync(options.bestPath, payload, 'utf8');
       currentWeights = candidateWeights;
@@ -439,6 +454,90 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
   })}\n`, 'utf8');
 }
 
+function requiredCandidateInputPath(options: PromotionLoopOptions): string {
+  if (!options.candidateInputPath) {
+    throw new Error('Missing candidate input path');
+  }
+  return options.candidateInputPath;
+}
+
+function trainingFromCandidateMetadata(
+  fallback: PolicyGradientCliOptions,
+  json: string
+): PolicyGradientCliOptions {
+  const metadata = candidateMetadata(json);
+  if (!metadata) {
+    return fallback;
+  }
+
+  return {
+    ...fallback,
+    seed: finiteMetadataNumber(metadata, 'seed', fallback.seed),
+    matches: finiteMetadataNumber(metadata, 'matches', fallback.matches),
+    frames: finiteMetadataNumber(metadata, 'frames', fallback.frames),
+    epochs: finiteMetadataNumber(metadata, 'epochs', fallback.epochs),
+    batchSize: finiteMetadataNumber(metadata, 'batchSize', fallback.batchSize),
+    learningRate: finiteMetadataNumber(metadata, 'learningRate', fallback.learningRate),
+    ppoClip: finiteMetadataNumber(metadata, 'ppoClip', fallback.ppoClip),
+    temperature: finiteMetadataNumber(metadata, 'temperature', fallback.temperature),
+    discount: finiteMetadataNumber(metadata, 'discount', fallback.discount),
+    startStateMode: startStateModeMetadata(metadata, fallback.startStateMode),
+    advantageBaseline: advantageBaselineMetadata(metadata, fallback.advantageBaseline),
+    actionMode: actionModeMetadata(metadata, fallback.actionMode),
+    opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
+  };
+}
+
+function candidateMetadata(json: string): Record<string, unknown> | undefined {
+  const parsed = JSON.parse(json) as unknown;
+  return isRecord(parsed) && isRecord(parsed.metadata) ? parsed.metadata : undefined;
+}
+
+function finiteMetadataNumber(
+  metadata: Record<string, unknown>,
+  field: string,
+  fallback: number
+): number {
+  const value = metadata[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function startStateModeMetadata(
+  metadata: Record<string, unknown>,
+  fallback: PolicyGradientCliOptions['startStateMode']
+): PolicyGradientCliOptions['startStateMode'] {
+  const value = metadata.startStateMode;
+  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+    ? value
+    : fallback;
+}
+
+function advantageBaselineMetadata(
+  metadata: Record<string, unknown>,
+  fallback: PolicyGradientCliOptions['advantageBaseline']
+): PolicyGradientCliOptions['advantageBaseline'] {
+  const value = metadata.advantageBaseline;
+  return value === 'global' || value === 'start-team-time' || value === 'learned'
+    ? value
+    : fallback;
+}
+
+function actionModeMetadata(
+  metadata: Record<string, unknown>,
+  fallback: PolicyGradientCliOptions['actionMode']
+): PolicyGradientCliOptions['actionMode'] {
+  const value = metadata.actionMode;
+  return value === 'raw' || value === 'runtime' ? value : fallback;
+}
+
+function opponentModeMetadata(
+  metadata: Record<string, unknown>,
+  fallback: PolicyGradientCliOptions['opponentMode']
+): PolicyGradientCliOptions['opponentMode'] {
+  const value = metadata.opponentMode;
+  return value === 'self' || value === 'traditional' || value === 'league' ? value : fallback;
+}
+
 function formatGateSummary(gate: PromotionLoopGate): string {
   return [
     `gate=${gate.name}`,
@@ -520,6 +619,10 @@ function positiveIntegerArg(argv: readonly string[], name: string, fallback: num
 
 function nonNegativeIntegerArg(argv: readonly string[], name: string, fallback: number): number {
   return Math.max(0, integerArg(argv, name, fallback));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('/promote-policy-gradient.ts') ||
