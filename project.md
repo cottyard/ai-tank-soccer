@@ -48,7 +48,7 @@ Policy shape must remain compatible with the browser unless a coordinated migrat
 
 ## Training Direction
 
-Prefer self-play reinforcement learning over hand-authored tactical labels. Older supervised replay, curriculum labels, tactical rollouts, and traditional-strategy opponents may stabilize training, but they should not become the main intelligence source.
+Prefer self-play reinforcement learning over hand-authored tactical labels. Older supervised replay, curriculum labels, tactical rollouts, and traditional-strategy opponents have not produced promotable runtime policies in recent evidence; keep them only for regression tests, parity checks, and narrow diagnostics, not as mainline AI-improvement methods.
 
 Current sparse-reward PPO supports:
 
@@ -61,7 +61,33 @@ Current sparse-reward PPO supports:
 - advantage normalization with `global`, `start-team-time`, or `learned` baselines;
 - trainable-only sample filtering when playing against frozen or traditional opponents.
 
-Rewards should stay tied to outcomes: future goals for/against and final win/loss/draw. Start-state curriculum is acceptable; shaped tactical rewards should be separate, documented, and used sparingly.
+Rewards should stay tied to outcomes: future goals for/against and final win/loss/draw. Start-state curriculum is acceptable only when it is evaluated through both standard and holdout gates; shaped tactical rewards should be separate, documented, and used sparingly.
+
+## Method Audit
+
+The recent plateau is not from a lack of tooling; it is from optimizing against weak or partial signals. Several runs improved one slice of behavior while failing the promotion gate, and earlier search ranked candidates before holdout or standard safety was fully represented.
+
+Keep as mainline:
+
+- Deterministic browser-runtime promotion gates. They are the only evidence that matches the playable model.
+- Native Rust sparse-reward PPO with runtime action execution, `start-team-time` advantages, self-play opponents, and mixed starts as the accepted baseline recipe.
+- Promotion-safe search infrastructure that evaluates standard and holdout gates together, searches explicit training seeds, and ranks standard-safe candidates before holdout-only gains.
+
+Keep only as diagnostics:
+
+- Open-start PPO. It consistently found a holdout seed `109` finishing gain, but every holdout-positive candidate still had standard score regression.
+- Learned baseline and weighted league opponent sampling. The default learned+league promotion run regressed standard score and goals; keep these as searchable variants only when testing a specific hypothesis.
+- Traditional opponents, supervised replay, curriculum labels, and tactical rollouts. They are useful for parity and regression coverage, but recent accepted progress came from sparse-reward runtime-gated PPO, not from hand-authored labels.
+- Runtime hill climbing, output-bias probes, stamina-threshold tuning, and local black-box weight tweaks. They overfit quickly and should not consume mainline training budget.
+
+Stop recommending:
+
+- Bare default promotion runs that use learned baseline + league sampling without a new hypothesis.
+- One-off learning-rate or epoch tweaks after the documented failures at `2026050210` and `2026050211`.
+- Narrow clip/temperature sweeps around the current accepted recipe unless they are tied to a diagnosed gate seed failure.
+- Searches with short `gate-frames` that do not produce goals; they rank noise, not soccer strength.
+
+Current lesson: the accepted policy is near a local gate plateau. Useful future work should explain specific seed-level regressions before launching more grid searches. The immediate target is to preserve the open-start holdout `109` gain without the standard seed `43` score loss.
 
 ## Development Principles
 
@@ -165,7 +191,7 @@ Automated native PPO promotion loop:
 npx tsx scripts/promote-policy-gradient.ts
 ```
 
-This trains a candidate from `public/models/neural-best.json`, samples native PPO opponents from a weighted league, uses the learned value baseline for sparse-return variance reduction, cycles mixed starts across open, outcome-curriculum, own-goal defense, corner fights, and loose-ball contests, runs the standard runtime gate and then the holdout runtime gate, writes `training-runs/neural-promotion-summary-s2026050208.json`, appends a compact entry to `training-runs/neural-promotion-history.jsonl`, and replaces `public/models/neural-best.json` only if both gates pass without meaningful goals or win-proxy regression. Use `--no-promote` for a dry run.
+This trains a candidate from `public/models/neural-best.json`, runs the standard runtime gate and then the holdout runtime gate, writes `training-runs/neural-promotion-summary-s2026050208.json`, appends a compact entry to `training-runs/neural-promotion-history.jsonl`, and replaces `public/models/neural-best.json` only if both gates pass without meaningful goals or win-proxy regression. Use `--no-promote` for a dry run. Do not run the learned-baseline + league-sampling defaults as the next improvement attempt unless the recipe has first been changed to address the documented standard-gate regression.
 
 Recent 2026-05-02 rejected promotion attempts:
 
@@ -176,9 +202,9 @@ Recent 2026-05-02 rejected promotion attempts:
 | `2026050210` | same as above with `lr=0.0005` | goals `8-1`, `avgScore=238.851`, `avgWin=0.675`, `avgBp=0.293` | Reject; reducing learning rate alone made gate performance worse. |
 | `2026050211` | same as above with `epochs=1` | goals `8-1`, `avgScore=237.964`, `avgWin=0.675`, `avgBp=0.282` | Reject; reducing epochs alone made gate performance worse. |
 
-Internet research via `http://127.0.0.1:10808` found two immediately testable ideas from primary sources: PPO's clipped surrogate is intended to support multiple minibatch epochs but remains hyperparameter-sensitive ([Schulman et al. 2017](https://arxiv.org/abs/1707.06347)); Population Based Training searches hyperparameters and schedules under a fixed budget instead of relying on one fixed recipe ([Jaderberg et al. 2017](https://arxiv.org/abs/1711.09846)). For this project, prefer a small promotion-oriented PBT/grid runner over more one-off full-length runs. MuZero-style learned-model planning ([Schrittwieser et al. 2019](https://arxiv.org/abs/1911.08265)) is too large a jump for the current codebase and should stay out of the near-term path.
+Internet research via `http://127.0.0.1:10808` found two immediately testable ideas from primary sources: PPO's clipped surrogate is intended to support multiple minibatch epochs but remains hyperparameter-sensitive ([Schulman et al. 2017](https://arxiv.org/abs/1707.06347)); Population Based Training searches hyperparameters and schedules under a fixed budget instead of relying on one fixed recipe ([Jaderberg et al. 2017](https://arxiv.org/abs/1711.09846)). In this project, blind PBT/grid expansion has already exposed trade-offs without promotion. Use search only after defining a seed-level hypothesis and keep MuZero-style learned-model planning ([Schrittwieser et al. 2019](https://arxiv.org/abs/1911.08265)) out of the near-term path.
 
-League opponents can include the current accepted model, extra snapshots, and a low-weight traditional stabilizer:
+League opponents can include the current accepted model, extra snapshots, and a low-weight traditional stabilizer for diagnostics only:
 
 ```powershell
 npx tsx scripts/promote-policy-gradient.ts `
@@ -192,6 +218,7 @@ Short promotion-oriented PPO grid search:
 ```powershell
 npx tsx scripts/search-policy-gradient.ts `
   --seed 2026050212 `
+  --training-seeds 2026050212,2026050213 `
   --matches 240 `
   --frames 180 `
   --gate-matches 2 `
@@ -200,11 +227,12 @@ npx tsx scripts/search-policy-gradient.ts `
   --epochs-list 1,2 `
   --ppo-clips 0.08,0.12,0.16 `
   --temperatures 1.0,1.1 `
-  --advantage-baseline start-team-time `
-  --opponent-mode self
+  --start-state-modes mixed,open `
+  --advantage-baselines start-team-time,learned `
+  --opponent-modes self,league
 ```
 
-This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
+This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. The search runner now supports explicit `--training-seeds`, searches `start-state-mode` / `advantage-baseline` / `opponent-mode` categorical dimensions, evaluates both standard and holdout gates, and ranks promotion-safe standard candidates before holdout-only gains. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
 
 Evaluate a search survivor through the full promotion gates without retraining it:
 
@@ -216,13 +244,17 @@ npx tsx scripts/promote-policy-gradient.ts `
 
 Search notes: a too-short `gate-frames=240` search produced no goals and no ranking signal, so short searches should keep the full `gate-frames=600` when possible. The `2026050217` two-variant search (`matches=120`, `frames=120`, full standard gate) found `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.1` with standard delta `+0.447`, goals unchanged at `11-1`, and holdout unchanged at goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289`. The full `--candidate-input` promotion check rejected it because the holdout score did not improve. Keep this as a non-regressing survivor and useful search signal, not an accepted promotion.
 
+The `search-policy-gradient` runner now evaluates both standard and holdout gates directly. A follow-up full-gate search on `2026050219` with a narrow grid over `ppo-clip={0.08,0.12,0.16}` and `temperature={1.0,1.1}` kept `lr=0.001`, `epochs=1`, and `start-team-time` / `self` fixed, but still produced no holdout score gains across all 6 variants. The best row matched the previous pattern: standard delta `+0.447`, holdout delta `0.000`, goals `11-1` standard and `11-0` holdout. That means the current narrow search surface is exhausted; future runs should widen the search space before burning more full-gate time.
+
+Broadened full-gate search on `2026050220` (`matches=120`, `frames=120`) over `start-state-mode={mixed,open}`, `advantage-baseline={start-team-time,learned}`, and `opponent-mode={self,league}` found a useful but non-promotable trade-off. `open + start-team-time + self` with `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.1` improved holdout to goals `13-1`, holdout delta `+19.319`, mostly by turning seed `109` from `1-0` to `3-0`, but regressed standard to goals `9-1`, standard delta `-55.322`. With promotion-safe ranking added, `2026050221` and `2026050226` showed the same split: temperature `1.0` can preserve the holdout `+19.319` signal with standard goals still `11-1` but standard score slightly negative (`-1.140` best observed), while temperature `1.05` restores standard delta `+0.447` and loses the holdout gain. Multi-seed search `2026050222..2026050225` reproduced the holdout-positive pattern for `open + start-team-time + self`, but no seed met the standard score gate. Treat open-start PPO as a promising diagnostic direction, not a promotion candidate yet.
+
 When using `--candidate-input`, the promotion loop reads the candidate weight metadata for seed, baseline, opponent mode, epochs, batch size, learning rate, clip, temperature, discount, start mode, and action mode. This keeps promotion summaries and history tied to the actual search candidate instead of the promotion loop's default training recipe.
 
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Expand search toward candidates that improve holdout, not just standard: run small full-gate searches over `ppo-clip`, `temperature`, and random seed while keeping `gate-frames=600`.
+1. Investigate the open-start trade-off instead of more blind grid search: compare why standard seed `43` loses about `6.15` score while holdout seed `109` gains two goals, then look for a mixed/open curriculum ratio or training schedule that keeps the seed `109` gain without standard score regression.
 2. Keep learned baselines and weighted league sampling available, but treat them as variants to search rather than defaults.
 3. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 
