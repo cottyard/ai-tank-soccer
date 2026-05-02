@@ -41,6 +41,23 @@ const TANK_TRACK_ANGULAR_ACCELERATION: f64 = 90.0;
 const FULL_POWER_STAMINA_RATIO: f64 = 0.5;
 const MAX_TRACK_SPEED: f64 = 245.0;
 const TRACK_WIDTH: f64 = TANK_WIDTH * 0.82;
+const STAMINA_CONSERVE_RATIO: f64 = 0.58;
+const CRITICAL_STAMINA_RATIO: f64 = 0.22;
+const DECISIVE_CONTACT_BUFFER: f64 = 28.0;
+const TACTICAL_ROLLOUT_FRAMES: usize = 18;
+const TACTICAL_IMPROVEMENT_MARGIN: f64 = 0.018;
+const TRADITIONAL_DEFENSE_X: f64 = 108.0;
+const TRADITIONAL_DANGER_DEPTH: f64 = 265.0;
+const TRADITIONAL_OWN_GOAL_AVOID_DEPTH: f64 = 205.0;
+const TRADITIONAL_BALL_PREDICT_SECONDS: f64 = 0.75;
+const TRADITIONAL_STRIKE_SETUP_DISTANCE: f64 = BALL_RADIUS + TANK_LENGTH + 42.0;
+const TRADITIONAL_STRIKE_APPROACH_TOLERANCE: f64 = TANK_RADIUS + 54.0;
+const TRADITIONAL_STRIKE_LATERAL_TOLERANCE: f64 = BALL_RADIUS + TANK_WIDTH * 0.58;
+const TRADITIONAL_STAMINA_CONSERVE_RATIO: f64 = 0.5;
+const TRADITIONAL_NEAR_BALL_BUFFER: f64 = 24.0;
+const TRADITIONAL_SIDE_WALL_DEPTH: f64 = BALL_RADIUS + 54.0;
+const TRADITIONAL_OPPONENT_CORNER_DEPTH: f64 = BALL_RADIUS + TANK_LENGTH + 72.0;
+const TRADITIONAL_STRAIGHT_HEADING_TOLERANCE: f64 = 0.18;
 
 #[derive(Clone)]
 struct Sample {
@@ -67,6 +84,31 @@ enum Team {
 enum StartStateMode {
     Open,
     OutcomeCurriculum,
+    Mixed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActualStartStateMode {
+    Open,
+    OutcomeCurriculum,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdvantageBaseline {
+    Global,
+    StartTeamTime,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionMode {
+    Raw,
+    Runtime,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpponentMode {
+    SelfPlay,
+    Traditional,
 }
 
 struct Options {
@@ -90,6 +132,9 @@ struct Options {
     goal_reward: f64,
     win_reward: f64,
     start_state_mode: StartStateMode,
+    advantage_baseline: AdvantageBaseline,
+    action_mode: ActionMode,
+    opponent_mode: OpponentMode,
 }
 
 #[derive(Clone, Copy)]
@@ -145,6 +190,7 @@ struct PendingDecision {
     frame: usize,
     probability: f64,
     trainable: bool,
+    start_state_mode: ActualStartStateMode,
 }
 
 struct Collection {
@@ -166,6 +212,14 @@ struct TrainingResult {
     red_goals: i32,
     blue_goals: i32,
     final_state: GameState,
+    advantage_baseline: AdvantageBaseline,
+    action_mode: ActionMode,
+    opponent_mode: OpponentMode,
+}
+
+struct PositionEvaluation {
+    total: f64,
+    corner_escape: f64,
 }
 
 fn main() {
@@ -244,6 +298,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         goal_reward: 1.0,
         win_reward: 1.4,
         start_state_mode: StartStateMode::OutcomeCurriculum,
+        advantage_baseline: AdvantageBaseline::Global,
+        action_mode: ActionMode::Raw,
+        opponent_mode: OpponentMode::SelfPlay,
     };
     let mut index = 0;
     while index < args.len() {
@@ -284,7 +341,29 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                 options.start_state_mode = match value.as_str() {
                     "open" => StartStateMode::Open,
                     "outcome-curriculum" => StartStateMode::OutcomeCurriculum,
+                    "mixed" => StartStateMode::Mixed,
                     _ => return Err(format!("Unknown start-state mode: {value}").into()),
+                }
+            }
+            "--advantage-baseline" => {
+                options.advantage_baseline = match value.as_str() {
+                    "global" => AdvantageBaseline::Global,
+                    "start-team-time" => AdvantageBaseline::StartTeamTime,
+                    _ => return Err(format!("Unknown advantage baseline: {value}").into()),
+                }
+            }
+            "--action-mode" => {
+                options.action_mode = match value.as_str() {
+                    "raw" => ActionMode::Raw,
+                    "runtime" => ActionMode::Runtime,
+                    _ => return Err(format!("Unknown action mode: {value}").into()),
+                }
+            }
+            "--opponent-mode" => {
+                options.opponent_mode = match value.as_str() {
+                    "self" | "self-play" => OpponentMode::SelfPlay,
+                    "traditional" => OpponentMode::Traditional,
+                    _ => return Err(format!("Unknown opponent mode: {value}").into()),
                 }
             }
             _ => return Err(format!("Unknown argument: {key}").into()),
@@ -411,6 +490,9 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         red_goals: collection.red_goals,
         blue_goals: collection.blue_goals,
         final_state: collection.final_state,
+        advantage_baseline: options.advantage_baseline,
+        action_mode: options.action_mode,
+        opponent_mode: options.opponent_mode,
     }
 }
 
@@ -432,7 +514,13 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     let mut final_state = initial_state();
 
     for match_index in 0..options.matches {
-        let mut state = seeded_initial_state(&mut random, match_index, options.start_state_mode);
+        let start_state_mode = resolve_start_state_mode(options.start_state_mode, match_index);
+        let mut state = seeded_initial_state(&mut random, match_index, start_state_mode);
+        let train_team = if match_index % 2 == 0 {
+            Team::Red
+        } else {
+            Team::Blue
+        };
         let mut pending: Vec<PendingDecision> = Vec::new();
         let mut goals: Vec<GoalEvent> = Vec::new();
         let mut red_command = stop_command();
@@ -440,22 +528,62 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
 
         for _ in 0..options.frames {
             if state.frame % frames_per_decision == 0 {
-                let red_decision = sample_team_decision(
-                    &state,
-                    Team::Red,
-                    weights,
-                    options.temperature,
-                    &mut random,
-                    true,
-                );
-                let blue_decision = sample_team_decision(
-                    &state,
-                    Team::Blue,
-                    opponent_weights_ref,
-                    options.temperature,
-                    &mut random,
-                    shared_policy,
-                );
+                let red_decision = match options.opponent_mode {
+                    OpponentMode::SelfPlay => sample_team_decision(
+                        &state,
+                        Team::Red,
+                        weights,
+                        options.temperature,
+                        &mut random,
+                        true,
+                        start_state_mode,
+                        options.action_mode,
+                    ),
+                    OpponentMode::Traditional => {
+                        if train_team == Team::Red {
+                            sample_team_decision(
+                                &state,
+                                Team::Red,
+                                weights,
+                                options.temperature,
+                                &mut random,
+                                true,
+                                start_state_mode,
+                                options.action_mode,
+                            )
+                        } else {
+                            (traditional_team_command(&state, Team::Red), None)
+                        }
+                    }
+                };
+                let blue_decision = match options.opponent_mode {
+                    OpponentMode::SelfPlay => sample_team_decision(
+                        &state,
+                        Team::Blue,
+                        opponent_weights_ref,
+                        options.temperature,
+                        &mut random,
+                        shared_policy,
+                        start_state_mode,
+                        options.action_mode,
+                    ),
+                    OpponentMode::Traditional => {
+                        if train_team == Team::Blue {
+                            sample_team_decision(
+                                &state,
+                                Team::Blue,
+                                weights,
+                                options.temperature,
+                                &mut random,
+                                true,
+                                start_state_mode,
+                                options.action_mode,
+                            )
+                        } else {
+                            (traditional_team_command(&state, Team::Blue), None)
+                        }
+                    }
+                };
                 red_command = red_decision.0;
                 blue_command = blue_decision.0;
                 if let Some(decision) = red_decision.1 {
@@ -494,7 +622,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     }
 
     let decision_count = all_decisions.len();
-    let advantages = normalized_advantages(&all_decisions);
+    let advantages = normalized_advantages(&all_decisions, options.advantage_baseline);
     let samples = all_decisions
         .into_iter()
         .zip(advantages)
@@ -623,6 +751,8 @@ fn sample_team_decision(
     temperature: f64,
     random: &mut SeededRandom,
     trainable: bool,
+    start_state_mode: ActualStartStateMode,
+    action_mode: ActionMode,
 ) -> (Command, Option<PendingDecision>) {
     let tank_index = match team {
         Team::Red => 0,
@@ -635,20 +765,709 @@ fn sample_team_decision(
         *logit /= temperature;
     }
     let probabilities = softmax(&logits);
-    let action = sample_action(&probabilities, random);
-    let probability = probabilities[action].max(1e-9);
+    let sampled_action = sample_action(&probabilities, random);
+    let executed_action = match action_mode {
+        ActionMode::Raw => sampled_action,
+        ActionMode::Runtime => runtime_action_index(state, team, tank, sampled_action),
+    };
+    let probability = probabilities[executed_action].max(1e-9);
 
     (
-        action_index_to_command(action),
+        action_index_to_command(executed_action),
         Some(PendingDecision {
             inputs,
-            action,
+            action: executed_action,
             team,
             frame: state.frame,
             probability,
             trainable,
+            start_state_mode,
         }),
     )
+}
+
+fn runtime_action_index(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    policy_action: usize,
+) -> usize {
+    let pressures = pressure_signals(state, team);
+    if should_conserve_stamina(state, team, tank, pressures) {
+        return 4;
+    }
+
+    let mut action = policy_action;
+    if should_use_tactical_rollout(state, team, tank, pressures) {
+        action = choose_tactical_action(state, team, policy_action);
+    }
+
+    command_to_action_index(regulate_critical_stamina_command(
+        state,
+        team,
+        tank,
+        pressures,
+        action_index_to_command(action),
+    ))
+}
+
+fn should_conserve_stamina(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    stamina_ratio(tank) < STAMINA_CONSERVE_RATIO
+        && !urgent_stamina_spend(state, team, tank, pressures)
+}
+
+fn urgent_stamina_spend(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    if pressures.own_goal > 0.5 {
+        return true;
+    }
+    if should_recover_critical_stamina(state, team, tank, pressures) {
+        return false;
+    }
+    is_loose_ball_contest(state, team, tank) || decisive_ball_contact(state, team, tank, pressures)
+}
+
+fn should_recover_critical_stamina(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    if stamina_ratio(tank) > CRITICAL_STAMINA_RATIO {
+        return false;
+    }
+    if pressures.own_goal > 0.35 || is_clinching_finish(state, team) {
+        return false;
+    }
+    if hypot(state.ball.velocity.x, state.ball.velocity.y) > 80.0 {
+        return false;
+    }
+
+    let ball_distance = distance(tank.position, state.ball.position);
+    if ball_distance > TANK_RADIUS + BALL_RADIUS + DECISIVE_CONTACT_BUFFER {
+        return false;
+    }
+
+    let opponent = nearest_opponent_tank(state, team);
+    let opponent_distance = distance(opponent.position, state.ball.position);
+    opponent_distance <= ball_distance + TANK_RADIUS * 0.75
+}
+
+fn is_clinching_finish(state: &GameState, team: Team) -> bool {
+    let sign = team_sign(team);
+    let attack_x = (state.ball.position.x - FIELD_LENGTH / 2.0) * sign + FIELD_LENGTH / 2.0;
+    let lane = (state.ball.position.y - FIELD_WIDTH / 2.0).abs() < GOAL_MOUTH * 0.46;
+    let attack_velocity = state.ball.velocity.x * sign;
+    attack_x > FIELD_LENGTH - 270.0 && lane && attack_velocity > -25.0
+}
+
+fn should_use_tactical_rollout(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    if decisive_ball_contact(state, team, tank, pressures) || pressures.own_goal > 0.5 {
+        return true;
+    }
+    if pressures.attack_corner.max(pressures.own_corner) > 0.52 {
+        if pressures.attack_corner >= pressures.own_corner
+            && opponent_near_ball(state, team, TANK_RADIUS * 1.9)
+        {
+            return false;
+        }
+        return true;
+    }
+    pressures.side_wall > 0.72 && distance(tank.position, state.ball.position) < TANK_RADIUS * 3.4
+}
+
+fn regulate_critical_stamina_command(
+    state: &GameState,
+    team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+    command: Command,
+) -> Command {
+    if stamina_ratio(tank) > CRITICAL_STAMINA_RATIO || pressures.own_goal > 0.5 {
+        return command;
+    }
+    if command.left.abs() + command.right.abs() <= 1.0 {
+        return command;
+    }
+
+    let local = target_in_tank_frame(tank, team, state.ball.position);
+    if local.1.abs() < TANK_RADIUS * 0.18 {
+        return if (command.left - command.right).abs() < 1e-9 {
+            Command {
+                left: command.left,
+                right: 0.0,
+            }
+        } else {
+            stop_command()
+        };
+    }
+
+    if local.1 > 0.0 {
+        Command {
+            left: command.left,
+            right: 0.0,
+        }
+    } else {
+        Command {
+            left: 0.0,
+            right: command.right,
+        }
+    }
+}
+
+fn is_loose_ball_contest(state: &GameState, team: Team, tank: &Tank) -> bool {
+    let ball_distance = distance(tank.position, state.ball.position);
+    if ball_distance > TANK_RADIUS * 4.1 {
+        return false;
+    }
+    let opponent = nearest_opponent_tank(state, team);
+    let opponent_distance = distance(opponent.position, state.ball.position);
+    let ball_speed = hypot(state.ball.velocity.x, state.ball.velocity.y);
+    let midfield = (state.ball.position.x - FIELD_LENGTH / 2.0).abs() < FIELD_LENGTH * 0.25;
+    let contested = opponent_distance < ball_distance + TANK_RADIUS * 1.25;
+    ball_speed < 160.0 && (midfield || contested)
+}
+
+fn opponent_near_ball(state: &GameState, team: Team, range: f64) -> bool {
+    let opponent = nearest_opponent_tank(state, team);
+    distance(opponent.position, state.ball.position) <= range
+}
+
+fn decisive_ball_contact(
+    state: &GameState,
+    _team: Team,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    let contact_distance = TANK_RADIUS + BALL_RADIUS + DECISIVE_CONTACT_BUFFER;
+    if distance(tank.position, state.ball.position) > contact_distance {
+        return false;
+    }
+    if pressures.attack_corner.max(pressures.own_corner) > 0.52 && pressures.own_goal <= 0.35 {
+        return false;
+    }
+    pressures.finishing > 0.35 || pressures.own_goal > 0.35
+}
+
+fn choose_tactical_action(state: &GameState, team: Team, policy_action: usize) -> usize {
+    let policy_action = policy_action.min(OUTPUT_COUNT - 1);
+    let policy_score = score_tactical_action(state, team, policy_action, TACTICAL_ROLLOUT_FRAMES);
+    let mut best_action = policy_action;
+    let mut best_score = policy_score;
+
+    for action in 0..OUTPUT_COUNT {
+        if action == policy_action {
+            continue;
+        }
+        let score = score_tactical_action(state, team, action, TACTICAL_ROLLOUT_FRAMES);
+        if score > best_score + 1e-9 {
+            best_action = action;
+            best_score = score;
+        }
+    }
+
+    if best_score > policy_score + TACTICAL_IMPROVEMENT_MARGIN {
+        best_action
+    } else {
+        policy_action
+    }
+}
+
+fn score_tactical_action(
+    state: &GameState,
+    team: Team,
+    action: usize,
+    rollout_frames: usize,
+) -> f64 {
+    let mut simulated = state.clone();
+    let before = evaluate_position(&simulated, team);
+    let opponent_action = 4;
+    for _ in 0..rollout_frames.max(1) {
+        let red_command = if team == Team::Red {
+            action_index_to_command(action)
+        } else {
+            action_index_to_command(opponent_action)
+        };
+        let blue_command = if team == Team::Blue {
+            action_index_to_command(action)
+        } else {
+            action_index_to_command(opponent_action)
+        };
+        step_game(&mut simulated, red_command, blue_command, FIXED_DT);
+    }
+
+    let after = evaluate_position(&simulated, team);
+    let delta = evaluate_position_delta(&simulated, state, team);
+    let command = action_index_to_command(action);
+    after.total - before.total + delta.corner_escape * 0.45
+        - (command.left.abs() + command.right.abs()) * 0.004
+}
+
+fn evaluate_position(state: &GameState, team: Team) -> PositionEvaluation {
+    let sign = team_sign(team);
+    let ball_attack_x = attack_x(team, state.ball.position.x);
+    let lane = goal_lane_score(state.ball.position.y);
+    let goal_diff = match team {
+        Team::Red => state.score_red - state.score_blue,
+        Team::Blue => state.score_blue - state.score_red,
+    } as f64;
+    let ball_progress = normalize_signed(ball_attack_x - FIELD_LENGTH / 2.0, FIELD_LENGTH / 2.0);
+    let goal_proximity = clamp01((ball_attack_x - FIELD_LENGTH * 0.68) / (FIELD_LENGTH * 0.32));
+    let shot_velocity = clamp_signed(state.ball.velocity.x * sign / 420.0);
+    let finish_threat = finish_threat_score(state, team, lane, goal_proximity);
+    let own_goal_proximity = clamp01((FIELD_LENGTH * 0.34 - ball_attack_x) / (FIELD_LENGTH * 0.34));
+    let incoming_own_goal = clamp01((-state.ball.velocity.x * sign) / 340.0);
+    let own_danger = clamp01((own_goal_proximity * 0.74 + incoming_own_goal * 0.42) * lane);
+    let tank = controlled_tank(state, team);
+    let possession = possession_score(state, team, tank);
+    let contest = contest_score(state, team, tank);
+    let corner_escape = corner_position_score(state, team);
+    let stamina = stamina_position_score(tank, own_danger, goal_proximity, possession);
+    let shot_lane = lane * goal_proximity;
+    let total = goal_diff * 12.0
+        + ball_progress * 1.7
+        + shot_lane * 0.95
+        + finish_threat * 1.05
+        + shot_velocity * 0.42
+        + contest * 0.7
+        + possession * 1.1
+        - own_danger * 2.2
+        + corner_escape * 0.85
+        + stamina * 0.22;
+    PositionEvaluation {
+        total,
+        corner_escape,
+    }
+}
+
+fn evaluate_position_delta(state: &GameState, initial: &GameState, team: Team) -> PositionEvaluation {
+    let after = evaluate_position(state, team);
+    let before = evaluate_position(initial, team);
+    let corner_escape = corner_escape_gain(state, initial, team);
+    PositionEvaluation {
+        total: after.total - before.total,
+        corner_escape,
+    }
+}
+
+fn finish_threat_score(state: &GameState, team: Team, lane: f64, goal_proximity: f64) -> f64 {
+    let sign = team_sign(team);
+    let attack_velocity = state.ball.velocity.x * sign;
+    let speed_toward_goal = clamp01(attack_velocity / 260.0);
+    let near_goal = clamp01((attack_x(team, state.ball.position.x) - (FIELD_LENGTH - 260.0)) / 160.0);
+    let goal_factor = 0.45 + goal_proximity * 0.55;
+    let y_velocity_drift = state.ball.velocity.y.abs() / attack_velocity.abs().max(1.0);
+    let straight_shot = clamp01(1.0 - y_velocity_drift * 1.15);
+    clamp01(lane * near_goal * goal_factor * (0.2 + speed_toward_goal * 0.8) * straight_shot)
+}
+
+fn possession_score(state: &GameState, team: Team, tank: &Tank) -> f64 {
+    let ball = state.ball.position;
+    let goal = goal_point(team);
+    let shot = unit_vector(goal.x - ball.x, goal.y - ball.y);
+    let setup_distance = BALL_RADIUS + TANK_RADIUS + 10.0;
+    let setup = Vec2 {
+        x: clamp_range(
+            ball.x - shot.x * setup_distance,
+            TANK_RADIUS,
+            FIELD_LENGTH - TANK_RADIUS,
+        ),
+        y: clamp_range(
+            ball.y - shot.y * setup_distance,
+            TANK_RADIUS,
+            FIELD_WIDTH - TANK_RADIUS,
+        ),
+    };
+    let setup_distance_ratio = distance(tank.position, setup) / FIELD_LENGTH;
+    let ball_distance = distance(tank.position, ball);
+    let contact = if ball_distance <= BALL_RADIUS + TANK_RADIUS + 20.0 {
+        0.48
+    } else {
+        0.0
+    };
+    let tank_to_ball = unit_vector(ball.x - tank.position.x, ball.y - tank.position.y);
+    let behind_ball = clamp_signed(tank_to_ball.x * shot.x + tank_to_ball.y * shot.y);
+    let heading_to_ball = (ball.y - tank.position.y).atan2(ball.x - tank.position.x);
+    let heading_alignment = normalize_angle(heading_to_ball - tank.angle).cos();
+    let shot_alignment = normalize_angle(shot.y.atan2(shot.x) - tank.angle).cos();
+    let opponent = nearest_opponent_tank(state, team);
+    let opponent_pressure = clamp01(1.0 - distance(opponent.position, ball) / (TANK_RADIUS * 3.2));
+
+    clamp_signed(
+        -setup_distance_ratio * 1.6
+            + contact
+            + behind_ball * 0.36
+            + heading_alignment * 0.22
+            + shot_alignment * 0.2
+            - opponent_pressure * 0.22,
+    )
+}
+
+fn contest_score(state: &GameState, team: Team, tank: &Tank) -> f64 {
+    let ball = state.ball.position;
+    let ball_distance = distance(tank.position, ball);
+    let close = 1.0 - clamp01(ball_distance / (TANK_RADIUS * 3.2));
+    let heading_to_ball = (ball.y - tank.position.y).atan2(ball.x - tank.position.x);
+    let nose_alignment = normalize_angle(heading_to_ball - tank.angle).cos();
+    let opponent = nearest_opponent_tank(state, team);
+    let opponent_pressure = clamp01(1.0 - distance(opponent.position, ball) / (TANK_RADIUS * 2.4));
+    let pinned = if is_corner_pinned(state, team) { 0.42 } else { 0.0 };
+    let loose_midfield = if (ball.x - FIELD_LENGTH / 2.0).abs() < FIELD_LENGTH * 0.24
+        && hypot(state.ball.velocity.x, state.ball.velocity.y) < 140.0
+    {
+        0.28
+    } else {
+        0.0
+    };
+
+    clamp_signed(close * 0.75 + nose_alignment * 0.38 + opponent_pressure * 0.26 + pinned + loose_midfield - 0.34)
+}
+
+fn corner_position_score(state: &GameState, team: Team) -> f64 {
+    let ball_attack_x = attack_x(team, state.ball.position.x);
+    let attacking_corner = ball_attack_x > FIELD_LENGTH - BALL_RADIUS - 90.0;
+    let defending_corner = ball_attack_x < BALL_RADIUS + 115.0;
+    if !attacking_corner && !defending_corner {
+        return 0.0;
+    }
+
+    let side_distance = side_wall_distance(state.ball.position.y);
+    let center_score = 1.0 - clamp01((state.ball.position.y - FIELD_WIDTH / 2.0).abs() / (FIELD_WIDTH / 2.0));
+    let wall_penalty = clamp01((BALL_RADIUS + 48.0 - side_distance) / (BALL_RADIUS + 48.0));
+    clamp_signed(center_score - wall_penalty * 0.68)
+}
+
+fn corner_escape_gain(state: &GameState, initial: &GameState, team: Team) -> f64 {
+    if !is_corner_pinned(initial, team) {
+        return 0.0;
+    }
+
+    let wall_clear_gain =
+        (side_wall_distance(state.ball.position.y) - side_wall_distance(initial.ball.position.y))
+            / (FIELD_WIDTH / 2.0);
+    let center_gain = ((initial.ball.position.y - FIELD_WIDTH / 2.0).abs()
+        - (state.ball.position.y - FIELD_WIDTH / 2.0).abs())
+        / (FIELD_WIDTH / 2.0);
+    let progress_gain =
+        (attack_x(team, state.ball.position.x) - attack_x(team, initial.ball.position.x))
+            / FIELD_LENGTH;
+    clamp_signed(wall_clear_gain * 1.35 + center_gain * 1.05 + progress_gain * 0.45)
+}
+
+fn is_corner_pinned(state: &GameState, team: Team) -> bool {
+    let ball_attack_x = attack_x(team, state.ball.position.x);
+    let near_end =
+        ball_attack_x > FIELD_LENGTH - BALL_RADIUS - 100.0 || ball_attack_x < BALL_RADIUS + 100.0;
+    near_end && side_wall_distance(state.ball.position.y) < BALL_RADIUS + 58.0
+}
+
+fn stamina_position_score(tank: &Tank, own_danger: f64, goal_proximity: f64, possession: f64) -> f64 {
+    let ratio = stamina_ratio(tank);
+    let urgent = own_danger > 0.45 || goal_proximity > 0.55 || possession > 0.25;
+    if urgent {
+        ratio * 0.2
+    } else {
+        ratio - 0.5
+    }
+}
+
+fn controlled_tank(state: &GameState, team: Team) -> &Tank {
+    state
+        .tanks
+        .iter()
+        .find(|candidate| candidate.team == team)
+        .unwrap()
+}
+
+fn nearest_opponent_tank(state: &GameState, team: Team) -> &Tank {
+    state
+        .tanks
+        .iter()
+        .filter(|candidate| candidate.team != team)
+        .min_by(|a, b| {
+            distance(a.position, state.ball.position)
+                .partial_cmp(&distance(b.position, state.ball.position))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap()
+}
+
+fn goal_lane_score(y: f64) -> f64 {
+    1.0 - clamp01((y - FIELD_WIDTH / 2.0).abs() / (GOAL_MOUTH * 0.72))
+}
+
+fn side_wall_distance(y: f64) -> f64 {
+    (y - BALL_RADIUS).min(FIELD_WIDTH - BALL_RADIUS - y)
+}
+
+fn attack_x(team: Team, x: f64) -> f64 {
+    match team {
+        Team::Red => x,
+        Team::Blue => FIELD_LENGTH - x,
+    }
+}
+
+fn unit_vector(x: f64, y: f64) -> Vec2 {
+    let length = hypot(x, y).max(1.0);
+    Vec2 {
+        x: x / length,
+        y: y / length,
+    }
+}
+
+fn traditional_team_command(state: &GameState, team: Team) -> Command {
+    let tank = controlled_tank(state, team);
+    let target = traditional_tactical_target(state, team, tank);
+    let urgent_defense = traditional_ball_threatens_own_goal(state, team);
+    let spend_low_stamina = urgent_defense || traditional_useful_ball_contact(tank, target, state, team);
+    traditional_drive_to(tank, target, spend_low_stamina)
+}
+
+fn traditional_tactical_target(state: &GameState, team: Team, tank: &Tank) -> Vec2 {
+    let ball = state.ball.position;
+    if traditional_is_wrong_side_own_goal_push(tank, ball, team) {
+        return traditional_own_goal_escape_target(tank, ball, team);
+    }
+    if traditional_ball_threatens_own_goal(state, team) {
+        return traditional_defensive_target(state, team);
+    }
+    if traditional_opponent_corner_trap(ball, team) {
+        return traditional_opponent_corner_target(state, team, tank);
+    }
+    if traditional_ball_near_side_wall(ball) && traditional_tank_near_ball(tank, state) {
+        return traditional_side_wall_recycle_target(ball, team);
+    }
+    traditional_attack_target(state, team, tank)
+}
+
+fn traditional_defensive_target(state: &GameState, team: Team) -> Vec2 {
+    let sign = team_sign(team);
+    let own_x = if team == Team::Red { 0.0 } else { FIELD_LENGTH };
+    clamp_tank_point(Vec2 {
+        x: own_x + sign * TRADITIONAL_DEFENSE_X,
+        y: traditional_predict_goal_lane_y(state, team),
+    })
+}
+
+fn traditional_attack_target(state: &GameState, team: Team, tank: &Tank) -> Vec2 {
+    let ball = state.ball.position;
+    let shot = traditional_attack_shot(state, team);
+    let readiness = traditional_shot_readiness(tank, ball, shot);
+    let approach_target = clamp_tank_point(Vec2 {
+        x: ball.x - shot.x * TRADITIONAL_STRIKE_SETUP_DISTANCE,
+        y: ball.y - shot.y * TRADITIONAL_STRIKE_SETUP_DISTANCE,
+    });
+    let aligned = readiness.x > BALL_RADIUS * 0.35
+        && readiness.y.abs() < TRADITIONAL_STRIKE_LATERAL_TOLERANCE;
+    let close_to_setup = distance(tank.position, approach_target) < TRADITIONAL_STRIKE_APPROACH_TOLERANCE
+        || traditional_tank_near_ball(tank, state);
+    if aligned && close_to_setup {
+        goal_point(team)
+    } else {
+        approach_target
+    }
+}
+
+fn traditional_attack_shot(state: &GameState, team: Team) -> Vec2 {
+    traditional_unit_vector(state.ball.position, goal_point(team), team_sign(team))
+}
+
+fn traditional_opponent_corner_target(state: &GameState, team: Team, tank: &Tank) -> Vec2 {
+    let ball = state.ball.position;
+    let sign = team_sign(team);
+    let inward = if ball.y < FIELD_WIDTH / 2.0 { 1.0 } else { -1.0 };
+    if traditional_tank_near_ball(tank, state) && sign * (ball.x - tank.position.x) > -BALL_RADIUS {
+        return clamp_tank_point(Vec2 {
+            x: ball.x - sign * 48.0,
+            y: ball.y + inward * 260.0,
+        });
+    }
+    clamp_tank_point(Vec2 {
+        x: ball.x - sign * (BALL_RADIUS + TANK_LENGTH + 92.0),
+        y: ball.y + inward * 230.0,
+    })
+}
+
+fn traditional_side_wall_recycle_target(ball: Vec2, team: Team) -> Vec2 {
+    let inward = if ball.y < FIELD_WIDTH / 2.0 { 1.0 } else { -1.0 };
+    clamp_tank_point(Vec2 {
+        x: ball.x - team_sign(team) * 70.0,
+        y: ball.y + inward * 210.0,
+    })
+}
+
+fn traditional_own_goal_escape_target(tank: &Tank, ball: Vec2, team: Team) -> Vec2 {
+    let sign = team_sign(team);
+    let side = if tank.position.y <= ball.y { -1.0 } else { 1.0 };
+    clamp_tank_point(Vec2 {
+        x: ball.x + sign * (BALL_RADIUS + TANK_LENGTH + 80.0),
+        y: ball.y + side * (BALL_RADIUS + TANK_WIDTH + 55.0),
+    })
+}
+
+fn traditional_is_wrong_side_own_goal_push(tank: &Tank, ball: Vec2, team: Team) -> bool {
+    let sign = team_sign(team);
+    let own_x = if team == Team::Red { 0.0 } else { FIELD_LENGTH };
+    let ball_deep = sign * (ball.x - own_x) < TRADITIONAL_OWN_GOAL_AVOID_DEPTH;
+    let in_goal_lane = (ball.y - FIELD_WIDTH / 2.0).abs() < GOAL_MOUTH * 0.72;
+    let tank_on_attack_side = sign * (tank.position.x - ball.x) > BALL_RADIUS * 0.45;
+    let facing_own_goal = tank.angle.cos() * sign < -0.32;
+    ball_deep && in_goal_lane && tank_on_attack_side && facing_own_goal
+}
+
+fn traditional_useful_ball_contact(tank: &Tank, target: Vec2, state: &GameState, team: Team) -> bool {
+    if !traditional_tank_near_ball(tank, state) {
+        return false;
+    }
+    let ball = state.ball.position;
+    let shot = traditional_attack_shot(state, team);
+    let readiness = traditional_shot_readiness(tank, ball, shot);
+    let to_ball = traditional_unit_vector(tank.position, ball, team_sign(team));
+    let to_target = traditional_unit_vector(tank.position, target, team_sign(team));
+    let moving_through_ball = dot_vec(to_ball, to_target) > 0.72;
+    let attacking_contact = readiness.x > -BALL_RADIUS * 0.25
+        && readiness.y.abs() < TRADITIONAL_STRIKE_LATERAL_TOLERANCE;
+    moving_through_ball && (attacking_contact || traditional_ball_in_own_danger_lane(ball, team))
+}
+
+fn traditional_ball_threatens_own_goal(state: &GameState, team: Team) -> bool {
+    let sign = team_sign(team);
+    let moving_toward_own_goal = state.ball.velocity.x * sign < -60.0;
+    let deep_in_lane = traditional_ball_in_own_danger_lane(state.ball.position, team);
+    if deep_in_lane {
+        return true;
+    }
+    if !moving_toward_own_goal {
+        return false;
+    }
+    (traditional_predict_goal_lane_y(state, team) - FIELD_WIDTH / 2.0).abs() < GOAL_MOUTH * 0.72
+}
+
+fn traditional_ball_in_own_danger_lane(ball: Vec2, team: Team) -> bool {
+    let sign = team_sign(team);
+    let own_x = if team == Team::Red { 0.0 } else { FIELD_LENGTH };
+    sign * (ball.x - own_x) < TRADITIONAL_DANGER_DEPTH
+        && (ball.y - FIELD_WIDTH / 2.0).abs() < GOAL_MOUTH * 0.72
+}
+
+fn traditional_predict_goal_lane_y(state: &GameState, team: Team) -> f64 {
+    let sign = team_sign(team);
+    let own_x = if team == Team::Red { 0.0 } else { FIELD_LENGTH };
+    let own_block_x = own_x + sign * TRADITIONAL_DEFENSE_X;
+    let moving_toward_own_goal = state.ball.velocity.x * sign < -10.0;
+    let seconds = if moving_toward_own_goal {
+        clamp_range(
+            (own_block_x - state.ball.position.x) / state.ball.velocity.x,
+            0.0,
+            TRADITIONAL_BALL_PREDICT_SECONDS,
+        )
+    } else {
+        0.0
+    };
+    clamp_range(
+        state.ball.position.y + state.ball.velocity.y * seconds,
+        FIELD_WIDTH / 2.0 - GOAL_MOUTH * 0.48,
+        FIELD_WIDTH / 2.0 + GOAL_MOUTH * 0.48,
+    )
+}
+
+fn traditional_opponent_corner_trap(ball: Vec2, team: Team) -> bool {
+    let opponent_depth = team_sign(team) * (goal_point(team).x - ball.x);
+    opponent_depth < TRADITIONAL_OPPONENT_CORNER_DEPTH && traditional_ball_near_side_wall(ball)
+}
+
+fn traditional_ball_near_side_wall(ball: Vec2) -> bool {
+    ball.y < TRADITIONAL_SIDE_WALL_DEPTH || ball.y > FIELD_WIDTH - TRADITIONAL_SIDE_WALL_DEPTH
+}
+
+fn traditional_tank_near_ball(tank: &Tank, state: &GameState) -> bool {
+    distance(tank.position, state.ball.position) <= TANK_RADIUS + BALL_RADIUS + TRADITIONAL_NEAR_BALL_BUFFER
+}
+
+fn traditional_shot_readiness(tank: &Tank, ball: Vec2, shot: Vec2) -> Vec2 {
+    let to_ball = Vec2 {
+        x: ball.x - tank.position.x,
+        y: ball.y - tank.position.y,
+    };
+    Vec2 {
+        x: to_ball.x * shot.x + to_ball.y * shot.y,
+        y: to_ball.x * -shot.y + to_ball.y * shot.x,
+    }
+}
+
+fn traditional_drive_to(tank: &Tank, target: Vec2, spend_low_stamina: bool) -> Command {
+    if !spend_low_stamina && stamina_ratio(tank) < TRADITIONAL_STAMINA_CONSERVE_RATIO {
+        return stop_command();
+    }
+    let dx = target.x - tank.position.x;
+    let dy = target.y - tank.position.y;
+    if hypot(dx, dy) < 14.0 {
+        return stop_command();
+    }
+
+    let desired = dy.atan2(dx);
+    let forward_error = normalize_angle(desired - tank.angle);
+    let reverse_error = normalize_angle(desired + std::f64::consts::PI - tank.angle);
+    let reverse = reverse_error.abs() + 0.18 < forward_error.abs();
+    let heading_error = if reverse { reverse_error } else { forward_error };
+    let base = if reverse { -1.0 } else { 1.0 };
+
+    if heading_error.abs() < TRADITIONAL_STRAIGHT_HEADING_TOLERANCE {
+        return Command { left: base, right: base };
+    }
+    if heading_error.abs() > 1.35 {
+        return if heading_error > 0.0 {
+            Command { left: 1.0, right: -1.0 }
+        } else {
+            Command { left: -1.0, right: 1.0 }
+        };
+    }
+    if heading_error > 0.0 {
+        return if reverse {
+            Command { left: 0.0, right: base }
+        } else {
+            Command { left: base, right: 0.0 }
+        };
+    }
+    if reverse {
+        Command { left: base, right: 0.0 }
+    } else {
+        Command { left: 0.0, right: base }
+    }
+}
+
+fn traditional_unit_vector(from: Vec2, to: Vec2, fallback_x: f64) -> Vec2 {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let length = hypot(dx, dy);
+    if length == 0.0 {
+        return Vec2 {
+            x: fallback_x,
+            y: 0.0,
+        };
+    }
+    Vec2 {
+        x: dx / length,
+        y: dy / length,
+    }
+}
+
+fn dot_vec(a: Vec2, b: Vec2) -> f64 {
+    a.x * b.x + a.y * b.y
 }
 
 fn decision_return(
@@ -677,27 +1496,103 @@ fn decision_return(
     total_return + (team_diff as f64).signum() * win_reward
 }
 
-fn normalized_advantages(decisions: &[(PendingDecision, f64)]) -> Vec<f64> {
+fn normalized_advantages(decisions: &[(PendingDecision, f64)], baseline: AdvantageBaseline) -> Vec<f64> {
     if decisions.is_empty() {
         return Vec::new();
     }
-    let mean = decisions.iter().map(|(_, value)| *value).sum::<f64>() / decisions.len() as f64;
-    let variance = decisions
+
+    let trainable: Vec<&(PendingDecision, f64)> = decisions
         .iter()
-        .map(|(_, value)| (*value - mean).powi(2))
-        .sum::<f64>()
-        / decisions.len() as f64;
-    let std = variance.sqrt();
+        .filter(|(decision, _)| decision.trainable)
+        .collect();
+    let population: Vec<&(PendingDecision, f64)> = if trainable.is_empty() {
+        decisions.iter().collect()
+    } else {
+        trainable
+    };
+    let global = advantage_stats(population.iter().map(|(_, value)| *value).collect());
+    let groups = if baseline == AdvantageBaseline::StartTeamTime {
+        grouped_advantage_stats(&population)
+    } else {
+        Vec::new()
+    };
+
     decisions
         .iter()
-        .map(|(_, value)| {
-            if std < 1e-6 {
-                *value - mean
+        .map(|(decision, value)| {
+            let stats = groups
+                .iter()
+                .find(|(key, _)| *key == advantage_group_key(decision))
+                .map(|(_, stats)| *stats)
+                .unwrap_or(global);
+            normalize_return(*value, stats)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct AdvantageStats {
+    mean: f64,
+    std: f64,
+}
+
+fn advantage_stats(values: Vec<f64>) -> AdvantageStats {
+    if values.is_empty() {
+        return AdvantageStats { mean: 0.0, std: 0.0 };
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| (*value - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    AdvantageStats {
+        mean,
+        std: variance.sqrt(),
+    }
+}
+
+fn grouped_advantage_stats(population: &[&(PendingDecision, f64)]) -> Vec<(String, AdvantageStats)> {
+    let mut groups: Vec<(String, Vec<f64>)> = Vec::new();
+    for (decision, value) in population {
+        let key = advantage_group_key(decision);
+        if let Some((_, values)) = groups.iter_mut().find(|(candidate, _)| *candidate == key) {
+            values.push(*value);
+        } else {
+            groups.push((key, vec![*value]));
+        }
+    }
+    groups
+        .into_iter()
+        .filter_map(|(key, values)| {
+            if values.len() < 2 {
+                None
             } else {
-                (*value - mean) / std
+                Some((key, advantage_stats(values)))
             }
         })
         .collect()
+}
+
+fn advantage_group_key(decision: &PendingDecision) -> String {
+    let start = match decision.start_state_mode {
+        ActualStartStateMode::Open => "open",
+        ActualStartStateMode::OutcomeCurriculum => "outcome-curriculum",
+    };
+    let team = match decision.team {
+        Team::Red => "red",
+        Team::Blue => "blue",
+    };
+    let time_bucket = decision.frame / (PHYSICS_HZ * 5).max(1);
+    format!("{start}:{team}:{time_bucket}")
+}
+
+fn normalize_return(value: f64, stats: AdvantageStats) -> f64 {
+    if stats.std < 1e-6 {
+        value - stats.mean
+    } else {
+        (value - stats.mean) / stats.std
+    }
 }
 
 fn initial_state() -> GameState {
@@ -744,7 +1639,7 @@ fn initial_state() -> GameState {
 fn seeded_initial_state(
     random: &mut SeededRandom,
     match_index: usize,
-    mode: StartStateMode,
+    mode: ActualStartStateMode,
 ) -> GameState {
     let mut state = initial_state();
     let y_jitter = (random.next() - 0.5) * FIELD_WIDTH * 0.32;
@@ -769,11 +1664,25 @@ fn seeded_initial_state(
     };
     state.tanks[1].angle = std::f64::consts::PI + (random.next() - 0.5) * 0.4;
 
-    if mode == StartStateMode::OutcomeCurriculum {
+    if mode == ActualStartStateMode::OutcomeCurriculum {
         place_outcome_curriculum_state(&mut state, match_index, random);
     }
 
     state
+}
+
+fn resolve_start_state_mode(mode: StartStateMode, match_index: usize) -> ActualStartStateMode {
+    match mode {
+        StartStateMode::Open => ActualStartStateMode::Open,
+        StartStateMode::OutcomeCurriculum => ActualStartStateMode::OutcomeCurriculum,
+        StartStateMode::Mixed => {
+            if match_index % 2 == 0 {
+                ActualStartStateMode::Open
+            } else {
+                ActualStartStateMode::OutcomeCurriculum
+            }
+        }
+    }
 }
 
 fn place_outcome_curriculum_state(
@@ -1710,6 +2619,33 @@ fn action_index_to_command(index: usize) -> Command {
     }
 }
 
+fn command_to_action_index(command: Command) -> usize {
+    let left = sanitize_track(command.left);
+    let right = sanitize_track(command.right);
+    match (left, right) {
+        (-1, -1) => 0,
+        (-1, 0) => 1,
+        (-1, 1) => 2,
+        (0, -1) => 3,
+        (0, 0) => 4,
+        (0, 1) => 5,
+        (1, -1) => 6,
+        (1, 0) => 7,
+        (1, 1) => 8,
+        _ => 4,
+    }
+}
+
+fn sanitize_track(track: f64) -> i32 {
+    if track > 0.5 {
+        1
+    } else if track < -0.5 {
+        -1
+    } else {
+        0
+    }
+}
+
 fn stop_command() -> Command {
     Command { left: 0.0, right: 0.0 }
 }
@@ -1876,6 +2812,28 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             match options.start_state_mode {
                 StartStateMode::Open => "open",
                 StartStateMode::OutcomeCurriculum => "outcome-curriculum",
+                StartStateMode::Mixed => "mixed",
+            }
+        ));
+        output.push_str(&format!(
+            ",\n    \"advantageBaseline\": \"{}\"",
+            match options.advantage_baseline {
+                AdvantageBaseline::Global => "global",
+                AdvantageBaseline::StartTeamTime => "start-team-time",
+            }
+        ));
+        output.push_str(&format!(
+            ",\n    \"actionMode\": \"{}\"",
+            match options.action_mode {
+                ActionMode::Raw => "raw",
+                ActionMode::Runtime => "runtime",
+            }
+        ));
+        output.push_str(&format!(
+            ",\n    \"opponentMode\": \"{}\"",
+            match options.opponent_mode {
+                OpponentMode::SelfPlay => "self",
+                OpponentMode::Traditional => "traditional",
             }
         ));
     }
@@ -1893,6 +2851,9 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"frames\": {},\n",
             "  \"redGoals\": {},\n",
             "  \"blueGoals\": {},\n",
+            "  \"advantageBaseline\": \"{}\",\n",
+            "  \"actionMode\": \"{}\",\n",
+            "  \"opponentMode\": \"{}\",\n",
             "  \"loss\": {:.17},\n",
             "  \"finalBallX\": {:.17},\n",
             "  \"finalBallY\": {:.17}\n",
@@ -1904,6 +2865,18 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.frames,
         result.red_goals,
         result.blue_goals,
+        match result.advantage_baseline {
+            AdvantageBaseline::Global => "global",
+            AdvantageBaseline::StartTeamTime => "start-team-time",
+        },
+        match result.action_mode {
+            ActionMode::Raw => "raw",
+            ActionMode::Runtime => "runtime",
+        },
+        match result.opponent_mode {
+            OpponentMode::SelfPlay => "self",
+            OpponentMode::Traditional => "traditional",
+        },
         result.loss,
         result.final_state.ball.position.x,
         result.final_state.ball.position.y

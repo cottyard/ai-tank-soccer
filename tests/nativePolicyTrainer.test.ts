@@ -190,7 +190,13 @@ describe('native policy trainer', () => {
         '--discount',
         '0.992',
         '--start-state-mode',
-        'outcome-curriculum'
+        'mixed',
+        '--advantage-baseline',
+        'start-team-time',
+        '--action-mode',
+        'runtime',
+        '--opponent-mode',
+        'traditional'
       ])
     };
 
@@ -218,9 +224,28 @@ describe('native policy trainer', () => {
     expect(totalDelta(first.weights, weights)).toBeGreaterThan(0);
 
     const nativeOutput = JSON.parse(readFileSync(firstOutput, 'utf8')) as {
-      metadata?: { trainer?: string };
+      metadata?: {
+        trainer?: string;
+        startStateMode?: string;
+        advantageBaseline?: string;
+        actionMode?: string;
+        opponentMode?: string;
+      };
     };
     expect(nativeOutput.metadata?.trainer).toBe('rust-policy-gradient');
+    expect(nativeOutput.metadata?.startStateMode).toBe('mixed');
+    expect(nativeOutput.metadata?.advantageBaseline).toBe('start-team-time');
+    expect(nativeOutput.metadata?.actionMode).toBe('runtime');
+    expect(nativeOutput.metadata?.opponentMode).toBe('traditional');
+
+    const nativeMetrics = JSON.parse(readFileSync(firstMetrics, 'utf8')) as {
+      advantageBaseline?: string;
+      actionMode?: string;
+      opponentMode?: string;
+    };
+    expect(nativeMetrics.advantageBaseline).toBe('start-team-time');
+    expect(nativeMetrics.actionMode).toBe('runtime');
+    expect(nativeMetrics.opponentMode).toBe('traditional');
   });
 
   (cargoPath ? it : it.skip)('supports frozen opponent weights for Rust PPO self-play', () => {

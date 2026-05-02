@@ -19,7 +19,12 @@ export type PolicyGradientDecision = PolicyGradientSample & {
   logProbability: number;
   return: number;
   trainable: boolean;
+  startStateMode: ActualStartStateMode;
 };
+
+export type PolicyGradientStartStateMode = ActualStartStateMode | 'mixed';
+export type PolicyGradientAdvantageBaseline = 'global' | 'start-team-time';
+type ActualStartStateMode = 'open' | 'outcome-curriculum';
 
 export type PolicyGradientCollectionOptions = {
   weights: PolicyWeights;
@@ -32,7 +37,8 @@ export type PolicyGradientCollectionOptions = {
   goalReward?: number;
   winReward?: number;
   normalizeAdvantages?: boolean;
-  startStateMode?: 'open' | 'outcome-curriculum';
+  advantageBaseline?: PolicyGradientAdvantageBaseline;
+  startStateMode?: PolicyGradientStartStateMode;
   initialStateFactory?: (match: number, random: () => number) => GameState;
 };
 
@@ -92,6 +98,7 @@ export function collectPolicyGradientSelfPlay(
   const goalReward = options.goalReward ?? DEFAULT_GOAL_REWARD;
   const winReward = options.winReward ?? DEFAULT_WIN_REWARD;
   const normalizeAdvantages = options.normalizeAdvantages ?? true;
+  const advantageBaseline = options.advantageBaseline ?? 'global';
   const decisions: PolicyGradientDecision[] = [];
   let redGoals = 0;
   let blueGoals = 0;
@@ -99,17 +106,18 @@ export function collectPolicyGradientSelfPlay(
   let finalState = createInitialState();
 
   for (let match = 0; match < matches; match += 1) {
+    const startStateMode = resolveStartStateMode(options.startStateMode ?? 'open', match);
     const state = options.initialStateFactory
       ? options.initialStateFactory(match, random)
-      : createSeededInitialState(random, match, options.startStateMode ?? 'open');
+      : createSeededInitialState(random, match, startStateMode);
     const pending: PendingDecision[] = [];
     const goals: GoalSnapshot[] = [];
     let commands: CommandMap = {};
 
     for (let frame = 0; frame < framesPerMatch; frame += 1) {
       if (state.frame % framesPerDecision === 0) {
-        const redDecision = sampleTeamDecision(state, 'red', options.weights, temperature, random);
-        const blueDecision = sampleTeamDecision(state, 'blue', opponentWeights, temperature, random);
+        const redDecision = sampleTeamDecision(state, 'red', options.weights, temperature, random, startStateMode);
+        const blueDecision = sampleTeamDecision(state, 'blue', opponentWeights, temperature, random, startStateMode);
         commands = {
           ...redDecision.commands,
           ...blueDecision.commands
@@ -154,7 +162,7 @@ export function collectPolicyGradientSelfPlay(
   }
 
   const normalizedDecisions = normalizeAdvantages
-    ? withNormalizedAdvantages(decisions)
+    ? withNormalizedAdvantages(decisions, advantageBaseline)
     : decisions;
 
   return {
@@ -218,7 +226,8 @@ function sampleTeamDecision(
   team: Team,
   weights: PolicyWeights,
   temperature: number,
-  random: () => number
+  random: () => number,
+  startStateMode: ActualStartStateMode
 ): { commands: CommandMap; decision?: PendingDecision } {
   const tank = state.tanks.find((candidate) => candidate.team === team && candidate.index === 0);
   if (!tank) {
@@ -243,6 +252,7 @@ function sampleTeamDecision(
       probability,
       logProbability: Math.log(probability),
       trainable: true,
+      startStateMode,
       rewards: []
     }
   };
@@ -279,14 +289,44 @@ function finalizeMatchDecisions(
       logProbability: decision.logProbability,
       return: totalReturn,
       advantage: totalReturn,
-      trainable: decision.trainable
+      trainable: decision.trainable,
+      startStateMode: decision.startStateMode
     };
   });
 }
 
-function withNormalizedAdvantages(decisions: readonly PolicyGradientDecision[]): PolicyGradientDecision[] {
+function withNormalizedAdvantages(
+  decisions: readonly PolicyGradientDecision[],
+  baseline: PolicyGradientAdvantageBaseline
+): PolicyGradientDecision[] {
   if (decisions.length === 0) {
     return [];
+  }
+
+  const population = decisions.filter((decision) => decision.trainable);
+  const globalStats = advantageStats(population.length > 0 ? population : decisions);
+  const groupedStats = baseline === 'start-team-time'
+    ? buildGroupedAdvantageStats(population.length > 0 ? population : decisions)
+    : new Map<string, AdvantageStats>();
+
+  return decisions.map((decision) => ({
+    ...decision,
+    advantage: normalizeReturn(
+      decision.return,
+      groupedStats.get(advantageGroupKey(decision)) ?? globalStats
+    )
+  }));
+}
+
+type AdvantageStats = {
+  count: number;
+  mean: number;
+  std: number;
+};
+
+function advantageStats(decisions: readonly PolicyGradientDecision[]): AdvantageStats {
+  if (decisions.length === 0) {
+    return { count: 0, mean: 0, std: 0 };
   }
 
   const mean = decisions.reduce((sum, decision) => sum + decision.return, 0) / decisions.length;
@@ -294,18 +334,42 @@ function withNormalizedAdvantages(decisions: readonly PolicyGradientDecision[]):
     (sum, decision) => sum + (decision.return - mean) ** 2,
     0
   ) / decisions.length;
-  const std = Math.sqrt(variance);
-  if (std < 1e-6) {
-    return decisions.map((decision) => ({
-      ...decision,
-      advantage: decision.return - mean
-    }));
+  return {
+    count: decisions.length,
+    mean,
+    std: Math.sqrt(variance)
+  };
+}
+
+function buildGroupedAdvantageStats(
+  decisions: readonly PolicyGradientDecision[]
+): Map<string, AdvantageStats> {
+  const grouped = new Map<string, PolicyGradientDecision[]>();
+  for (const decision of decisions) {
+    const key = advantageGroupKey(decision);
+    grouped.set(key, [...(grouped.get(key) ?? []), decision]);
   }
 
-  return decisions.map((decision) => ({
-    ...decision,
-    advantage: (decision.return - mean) / std
-  }));
+  const stats = new Map<string, AdvantageStats>();
+  for (const [key, values] of grouped.entries()) {
+    const groupStats = advantageStats(values);
+    if (groupStats.count >= 2) {
+      stats.set(key, groupStats);
+    }
+  }
+  return stats;
+}
+
+function advantageGroupKey(decision: Pick<PolicyGradientDecision, 'startStateMode' | 'team' | 'frame'>): string {
+  const timeBucket = Math.floor(decision.frame / (PHYSICS_HZ * 5));
+  return `${decision.startStateMode}:${decision.team}:${timeBucket}`;
+}
+
+function normalizeReturn(value: number, stats: AdvantageStats): number {
+  if (stats.std < 1e-6) {
+    return value - stats.mean;
+  }
+  return (value - stats.mean) / stats.std;
 }
 
 function sampleAction(probabilities: readonly number[], random: () => number): number {
@@ -322,7 +386,7 @@ function sampleAction(probabilities: readonly number[], random: () => number): n
 function createSeededInitialState(
   random: () => number,
   match: number,
-  mode: 'open' | 'outcome-curriculum'
+  mode: ActualStartStateMode
 ): GameState {
   const state = createInitialState();
   const yJitter = (random() - 0.5) * FIELD.width * 0.32;
@@ -359,6 +423,13 @@ function createSeededInitialState(
   }
 
   return state;
+}
+
+function resolveStartStateMode(mode: PolicyGradientStartStateMode, match: number): ActualStartStateMode {
+  if (mode === 'mixed') {
+    return match % 2 === 0 ? 'open' : 'outcome-curriculum';
+  }
+  return mode;
 }
 
 function placeOutcomeCurriculumState(

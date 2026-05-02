@@ -99,7 +99,48 @@ describe('policy-gradient self-play training', () => {
           actionIndex: decision.actionIndex,
           advantage: decision.advantage,
           oldProbability: decision.probability
-        }))
+      }))
+    );
+  });
+
+  it('centers normalized advantages using only trainable frozen-opponent decisions', () => {
+    const weights = defaultNeuralWeights();
+    const opponentWeights = weights.map((weight, index) => weight + (index % 2 === 0 ? 0.01 : -0.01));
+    const result = collectPolicyGradientSelfPlay({
+      weights,
+      opponentWeights,
+      matches: 1,
+      frames: 12,
+      seed: 19,
+      discount: 1,
+      goalReward: 1,
+      winReward: 1,
+      normalizeAdvantages: true,
+      advantageBaseline: 'global',
+      initialStateFactory: createImmediateRedGoalState
+    });
+
+    const trainableAdvantages = result.decisions
+      .filter((decision) => decision.trainable)
+      .map((decision) => decision.advantage);
+    const trainableMean = trainableAdvantages.reduce((sum, value) => sum + value, 0) / trainableAdvantages.length;
+
+    expect(trainableAdvantages.length).toBeGreaterThan(0);
+    expect(Math.abs(trainableMean)).toBeLessThan(1e-9);
+  });
+
+  it('mixes open and outcome-curriculum starts for broader sparse-reward collection', () => {
+    const weights = defaultNeuralWeights();
+    const result = collectPolicyGradientSelfPlay({
+      weights,
+      matches: 4,
+      frames: 18,
+      seed: 23,
+      startStateMode: 'mixed'
+    });
+
+    expect(new Set(result.decisions.map((decision) => decision.startStateMode))).toEqual(
+      new Set(['open', 'outcome-curriculum'])
     );
   });
 

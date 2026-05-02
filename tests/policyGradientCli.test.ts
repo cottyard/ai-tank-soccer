@@ -33,7 +33,13 @@ describe('policy-gradient CLI trainer', () => {
       '--discount',
       '0.97',
       '--start-state-mode',
-      'open',
+      'mixed',
+      '--advantage-baseline',
+      'start-team-time',
+      '--action-mode',
+      'runtime',
+      '--opponent-mode',
+      'traditional',
       '--native',
       '--native-bin',
       'trainer-rust/target/release/soccer-policy-trainer.exe'
@@ -52,7 +58,10 @@ describe('policy-gradient CLI trainer', () => {
       ppoClip: 0.18,
       temperature: 1.15,
       discount: 0.97,
-      startStateMode: 'open',
+      startStateMode: 'mixed',
+      advantageBaseline: 'start-team-time',
+      actionMode: 'runtime',
+      opponentMode: 'traditional',
       native: true,
       nativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe'
     });

@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { loadWeightsPayload, serializeWeightsPayload } from './coach-neural';
 import {
   trainPolicyGradientSelfPlay,
+  type PolicyGradientAdvantageBaseline,
+  type PolicyGradientStartStateMode,
   type PolicyGradientTrainingResult
 } from '../src/ai/policyGradientTraining';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
@@ -30,7 +32,10 @@ type PolicyGradientCliOptions = {
   ppoClip: number;
   temperature: number;
   discount: number;
-  startStateMode: 'open' | 'outcome-curriculum';
+  startStateMode: PolicyGradientStartStateMode;
+  advantageBaseline: PolicyGradientAdvantageBaseline;
+  actionMode: 'raw' | 'runtime';
+  opponentMode: 'self' | 'traditional';
   native: boolean;
   nativeBin?: string;
 };
@@ -46,6 +51,9 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   temperature: 1.08,
   discount: 0.992,
   startStateMode: 'outcome-curriculum',
+  advantageBaseline: 'global',
+  actionMode: 'raw',
+  opponentMode: 'self',
   native: false
 };
 
@@ -64,6 +72,9 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     temperature: Math.max(0.05, numberArg(argv, '--temperature', DEFAULT_OPTIONS.temperature)),
     discount: clamp01(numberArg(argv, '--discount', DEFAULT_OPTIONS.discount)),
     startStateMode: startStateModeArg(argv, '--start-state-mode', DEFAULT_OPTIONS.startStateMode),
+    advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
+    actionMode: actionModeArg(argv, '--action-mode', DEFAULT_OPTIONS.actionMode),
+    opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
     native: argv.includes('--native'),
     nativeBin: stringArg(argv, '--native-bin')
   };
@@ -87,6 +98,7 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
     ppoClip: options.ppoClip,
     temperature: options.temperature,
     discount: options.discount,
+    advantageBaseline: options.advantageBaseline,
     startStateMode: options.startStateMode,
     seed: options.seed
   });
@@ -156,7 +168,13 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     '--discount',
     String(options.discount),
     '--start-state-mode',
-    options.startStateMode
+    options.startStateMode,
+    '--advantage-baseline',
+    options.advantageBaseline,
+    '--action-mode',
+    options.actionMode,
+    '--opponent-mode',
+    options.opponentMode
   ], { stdio: 'pipe' });
 
   const weights = loadWeightsPayload(readFileSync(outputPath, 'utf8'));
@@ -285,10 +303,43 @@ function valueAfter(argv: readonly string[], name: string): string | undefined {
 function startStateModeArg(
   argv: readonly string[],
   name: string,
-  fallback: 'open' | 'outcome-curriculum'
-): 'open' | 'outcome-curriculum' {
+  fallback: PolicyGradientStartStateMode
+): PolicyGradientStartStateMode {
   const value = valueAfter(argv, name);
-  return value === 'open' || value === 'outcome-curriculum'
+  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+    ? value
+    : fallback;
+}
+
+function advantageBaselineArg(
+  argv: readonly string[],
+  name: string,
+  fallback: PolicyGradientAdvantageBaseline
+): PolicyGradientAdvantageBaseline {
+  const value = valueAfter(argv, name);
+  return value === 'global' || value === 'start-team-time'
+    ? value
+    : fallback;
+}
+
+function actionModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: 'raw' | 'runtime'
+): 'raw' | 'runtime' {
+  const value = valueAfter(argv, name);
+  return value === 'raw' || value === 'runtime'
+    ? value
+    : fallback;
+}
+
+function opponentModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: 'self' | 'traditional'
+): 'self' | 'traditional' {
+  const value = valueAfter(argv, name);
+  return value === 'self' || value === 'traditional'
     ? value
     : fallback;
 }

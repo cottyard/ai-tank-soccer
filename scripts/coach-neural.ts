@@ -9,7 +9,11 @@ import { LearningReplayBuffer, trainOfflineFromReplay, type LearningSample, type
 import { POLICY_ACTION_COUNT } from '../src/ai/policyActions';
 import { POLICY_INPUT_COUNT } from '../src/ai/policyNetwork';
 import { trainSelfPlayPolicy } from '../src/ai/selfPlayTraining';
-import { trainPolicyGradientSelfPlay } from '../src/ai/policyGradientTraining';
+import {
+  trainPolicyGradientSelfPlay,
+  type PolicyGradientAdvantageBaseline,
+  type PolicyGradientStartStateMode
+} from '../src/ai/policyGradientTraining';
 import { trainCurriculumPolicy } from '../src/ai/curriculumTraining';
 import { evaluateRuntimePolicy } from '../src/ai/policyGate';
 import { traditionalStrategy } from '../src/ai/traditionalStrategy';
@@ -48,7 +52,10 @@ export type CoachOptions = {
   rlPpoClip: number;
   rlTemperature: number;
   rlDiscount: number;
-  rlStartStateMode: 'open' | 'outcome-curriculum';
+  rlStartStateMode: PolicyGradientStartStateMode;
+  rlAdvantageBaseline: PolicyGradientAdvantageBaseline;
+  rlActionMode: 'raw' | 'runtime';
+  rlOpponentMode: 'self' | 'traditional';
   rlNative: boolean;
   rlNativeBin?: string;
   curriculumScenarios: number;
@@ -149,6 +156,9 @@ const DEFAULT_OPTIONS: CoachOptions = {
   rlTemperature: 1.08,
   rlDiscount: 0.992,
   rlStartStateMode: 'outcome-curriculum',
+  rlAdvantageBaseline: 'global',
+  rlActionMode: 'raw',
+  rlOpponentMode: 'self',
   rlNative: false,
   curriculumScenarios: 0,
   curriculumFrames: 14,
@@ -180,6 +190,9 @@ export function parseCoachArgs(argv: readonly string[]): CoachOptions {
     rlTemperature: numberArg(argv, '--rl-temperature', DEFAULT_OPTIONS.rlTemperature),
     rlDiscount: clamp01(numberArg(argv, '--rl-discount', DEFAULT_OPTIONS.rlDiscount)),
     rlStartStateMode: startStateModeArg(argv, '--rl-start-state-mode', DEFAULT_OPTIONS.rlStartStateMode),
+    rlAdvantageBaseline: advantageBaselineArg(argv, '--rl-advantage-baseline', DEFAULT_OPTIONS.rlAdvantageBaseline),
+    rlActionMode: actionModeArg(argv, '--rl-action-mode', DEFAULT_OPTIONS.rlActionMode),
+    rlOpponentMode: opponentModeArg(argv, '--rl-opponent-mode', DEFAULT_OPTIONS.rlOpponentMode),
     rlNative: argv.includes('--rl-native'),
     rlNativeBin: stringArg(argv, '--rl-native-bin'),
     curriculumScenarios: nonNegativeIntegerArg(argv, '--curriculum-scenarios', DEFAULT_OPTIONS.curriculumScenarios),
@@ -750,6 +763,7 @@ function trainPolicyGradientCycle(
       ppoClip: options.rlPpoClip,
       temperature: options.rlTemperature,
       discount: options.rlDiscount,
+      advantageBaseline: options.rlAdvantageBaseline,
       startStateMode: options.rlStartStateMode,
       seed
     });
@@ -765,7 +779,10 @@ function trainPolicyGradientCycle(
     ppoClip: options.rlPpoClip,
     temperature: options.rlTemperature,
     discount: options.rlDiscount,
+    advantageBaseline: options.rlAdvantageBaseline,
     startStateMode: options.rlStartStateMode,
+    actionMode: options.rlActionMode,
+    opponentMode: options.rlOpponentMode,
     nativeBin: options.rlNativeBin
   });
 }
@@ -783,7 +800,10 @@ function runNativePolicyGradientCycle(
     ppoClip: number;
     temperature: number;
     discount: number;
-    startStateMode: 'open' | 'outcome-curriculum';
+    startStateMode: PolicyGradientStartStateMode;
+    advantageBaseline: PolicyGradientAdvantageBaseline;
+    actionMode: 'raw' | 'runtime';
+    opponentMode: 'self' | 'traditional';
     nativeBin?: string;
   }
 ): ReturnType<typeof trainPolicyGradientSelfPlay> {
@@ -821,7 +841,13 @@ function runNativePolicyGradientCycle(
     '--discount',
     String(options.discount),
     '--start-state-mode',
-    options.startStateMode
+    options.startStateMode,
+    '--advantage-baseline',
+    options.advantageBaseline,
+    '--action-mode',
+    options.actionMode,
+    '--opponent-mode',
+    options.opponentMode
   ];
 
   writeFileSync(weightsPath, JSON.stringify({ weights }), 'utf8');
@@ -1003,10 +1029,43 @@ function valueAfter(argv: readonly string[], name: string): string | undefined {
 function startStateModeArg(
   argv: readonly string[],
   name: string,
-  fallback: 'open' | 'outcome-curriculum'
-): 'open' | 'outcome-curriculum' {
+  fallback: PolicyGradientStartStateMode
+): PolicyGradientStartStateMode {
   const value = valueAfter(argv, name);
-  return value === 'open' || value === 'outcome-curriculum'
+  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+    ? value
+    : fallback;
+}
+
+function advantageBaselineArg(
+  argv: readonly string[],
+  name: string,
+  fallback: PolicyGradientAdvantageBaseline
+): PolicyGradientAdvantageBaseline {
+  const value = valueAfter(argv, name);
+  return value === 'global' || value === 'start-team-time'
+    ? value
+    : fallback;
+}
+
+function actionModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: 'raw' | 'runtime'
+): 'raw' | 'runtime' {
+  const value = valueAfter(argv, name);
+  return value === 'raw' || value === 'runtime'
+    ? value
+    : fallback;
+}
+
+function opponentModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: 'self' | 'traditional'
+): 'self' | 'traditional' {
+  const value = valueAfter(argv, name);
+  return value === 'self' || value === 'traditional'
     ? value
     : fallback;
 }
