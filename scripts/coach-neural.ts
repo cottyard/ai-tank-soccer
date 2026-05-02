@@ -55,7 +55,7 @@ export type CoachOptions = {
   rlStartStateMode: PolicyGradientStartStateMode;
   rlAdvantageBaseline: PolicyGradientAdvantageBaseline;
   rlActionMode: 'raw' | 'runtime';
-  rlOpponentMode: 'self' | 'traditional';
+  rlOpponentMode: 'self' | 'traditional' | 'league';
   rlNative: boolean;
   rlNativeBin?: string;
   curriculumScenarios: number;
@@ -803,7 +803,7 @@ function runNativePolicyGradientCycle(
     startStateMode: PolicyGradientStartStateMode;
     advantageBaseline: PolicyGradientAdvantageBaseline;
     actionMode: 'raw' | 'runtime';
-    opponentMode: 'self' | 'traditional';
+    opponentMode: 'self' | 'traditional' | 'league';
     nativeBin?: string;
   }
 ): ReturnType<typeof trainPolicyGradientSelfPlay> {
@@ -1043,7 +1043,7 @@ function advantageBaselineArg(
   fallback: PolicyGradientAdvantageBaseline
 ): PolicyGradientAdvantageBaseline {
   const value = valueAfter(argv, name);
-  return value === 'global' || value === 'start-team-time'
+  return value === 'global' || value === 'start-team-time' || value === 'learned'
     ? value
     : fallback;
 }
@@ -1062,10 +1062,10 @@ function actionModeArg(
 function opponentModeArg(
   argv: readonly string[],
   name: string,
-  fallback: 'self' | 'traditional'
-): 'self' | 'traditional' {
+  fallback: 'self' | 'traditional' | 'league'
+): 'self' | 'traditional' | 'league' {
   const value = valueAfter(argv, name);
-  return value === 'self' || value === 'traditional'
+  return value === 'self' || value === 'traditional' || value === 'league'
     ? value
     : fallback;
 }

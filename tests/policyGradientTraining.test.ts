@@ -129,18 +129,50 @@ describe('policy-gradient self-play training', () => {
     expect(Math.abs(trainableMean)).toBeLessThan(1e-9);
   });
 
-  it('mixes open and outcome-curriculum starts for broader sparse-reward collection', () => {
+  it('can reduce return variance with a learned value baseline', () => {
+    const weights = defaultNeuralWeights();
+    const global = collectPolicyGradientSelfPlay({
+      weights,
+      matches: 1,
+      frames: 12,
+      seed: 29,
+      discount: 1,
+      goalReward: 1,
+      winReward: 1,
+      normalizeAdvantages: true,
+      advantageBaseline: 'global',
+      initialStateFactory: createImmediateRedGoalState
+    });
+    const learned = collectPolicyGradientSelfPlay({
+      weights,
+      matches: 1,
+      frames: 12,
+      seed: 29,
+      discount: 1,
+      goalReward: 1,
+      winReward: 1,
+      normalizeAdvantages: true,
+      advantageBaseline: 'learned',
+      initialStateFactory: createImmediateRedGoalState
+    });
+
+    expect(learned.decisions).toHaveLength(global.decisions.length);
+    expect(advantageVariance(learned.decisions)).toBeLessThan(advantageVariance(global.decisions));
+    expect(learned.samples.every((sample) => Number.isFinite(sample.advantage))).toBe(true);
+  });
+
+  it('mixes open, outcome, defensive, corner, and loose-ball starts for broader sparse-reward collection', () => {
     const weights = defaultNeuralWeights();
     const result = collectPolicyGradientSelfPlay({
       weights,
-      matches: 4,
+      matches: 5,
       frames: 18,
       seed: 23,
       startStateMode: 'mixed'
     });
 
     expect(new Set(result.decisions.map((decision) => decision.startStateMode))).toEqual(
-      new Set(['open', 'outcome-curriculum'])
+      new Set(['open', 'outcome-curriculum', 'own-goal-defense', 'corner-fight', 'loose-ball-contest'])
     );
   });
 
@@ -178,4 +210,9 @@ function createImmediateRedGoalState(): GameState {
   };
   state.ball.velocity = { x: 220, y: 0 };
   return state;
+}
+
+function advantageVariance(decisions: readonly { advantage: number }[]): number {
+  const mean = decisions.reduce((sum, decision) => sum + decision.advantage, 0) / decisions.length;
+  return decisions.reduce((sum, decision) => sum + (decision.advantage - mean) ** 2, 0) / decisions.length;
 }

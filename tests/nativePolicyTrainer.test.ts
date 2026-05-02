@@ -191,8 +191,8 @@ describe('native policy trainer', () => {
         '0.992',
         '--start-state-mode',
         'mixed',
-        '--advantage-baseline',
-        'start-team-time',
+      '--advantage-baseline',
+      'learned',
         '--action-mode',
         'runtime',
         '--opponent-mode',
@@ -234,7 +234,7 @@ describe('native policy trainer', () => {
     };
     expect(nativeOutput.metadata?.trainer).toBe('rust-policy-gradient');
     expect(nativeOutput.metadata?.startStateMode).toBe('mixed');
-    expect(nativeOutput.metadata?.advantageBaseline).toBe('start-team-time');
+    expect(nativeOutput.metadata?.advantageBaseline).toBe('learned');
     expect(nativeOutput.metadata?.actionMode).toBe('runtime');
     expect(nativeOutput.metadata?.opponentMode).toBe('traditional');
 
@@ -242,10 +242,17 @@ describe('native policy trainer', () => {
       advantageBaseline?: string;
       actionMode?: string;
       opponentMode?: string;
+      startFamilies?: Record<string, number>;
     };
-    expect(nativeMetrics.advantageBaseline).toBe('start-team-time');
+    expect(nativeMetrics.advantageBaseline).toBe('learned');
     expect(nativeMetrics.actionMode).toBe('runtime');
     expect(nativeMetrics.opponentMode).toBe('traditional');
+    expect(nativeMetrics.startFamilies).toMatchObject({
+      open: 1,
+      outcomeCurriculum: 1,
+      ownGoalDefense: 1,
+      cornerFight: 1
+    });
   });
 
   (cargoPath ? it : it.skip)('supports frozen opponent weights for Rust PPO self-play', () => {
@@ -305,6 +312,98 @@ describe('native policy trainer', () => {
 
     expect(metrics.decisions).toBeGreaterThan(metrics.samples);
     expect(metrics.samples).toBe(metrics.decisions / 2);
+  });
+
+  (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-league-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const recentWeightsPath = join(workdir, 'recent.json');
+    const historicalWeightsPath = join(workdir, 'historical.json');
+    const outputWeights = join(workdir, 'trained.json');
+    const metricsOutput = join(workdir, 'metrics.json');
+    const targetDir = join(workdir, 'target');
+    const weights = defaultNeuralWeights();
+    const recentWeights = weights.map((weight, index) => weight + (index % 3 === 0 ? 0.003 : -0.001));
+    const historicalWeights = weights.map((weight, index) => weight + (index % 5 === 0 ? -0.004 : 0.002));
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    writeFileSync(recentWeightsPath, JSON.stringify({ weights: recentWeights }), 'utf8');
+    writeFileSync(historicalWeightsPath, JSON.stringify({ weights: historicalWeights }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      '--native',
+      '--native-bin',
+      join(targetDir, 'release', 'soccer-policy-trainer.exe'),
+      '--input',
+      inputWeights,
+      '--league-opponent-weights',
+      recentWeightsPath,
+      '--league-opponent-weights',
+      historicalWeightsPath,
+      '--league-current-weight',
+      '1.5',
+      '--league-traditional-weight',
+      '0.25',
+      '--opponent-mode',
+      'league',
+      '--output',
+      outputWeights,
+      '--metrics-output',
+      metricsOutput,
+      '--seed',
+      '93',
+      '--matches',
+      '8',
+      '--frames',
+      '24',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '4'
+    ]));
+
+    const trained = JSON.parse(readFileSync(outputWeights, 'utf8')) as {
+      metadata?: {
+        opponentMode?: string;
+        leagueOpponentCount?: number;
+        leagueCurrentWeight?: number;
+        leagueTraditionalWeight?: number;
+      };
+    };
+    const metrics = JSON.parse(readFileSync(metricsOutput, 'utf8')) as {
+      samples: number;
+      decisions: number;
+      opponentMode?: string;
+      leagueOpponentCount?: number;
+      leagueCurrentWeight?: number;
+      leagueTraditionalWeight?: number;
+    };
+
+    expect(metrics.opponentMode).toBe('league');
+    expect(metrics.leagueOpponentCount).toBe(2);
+    expect(metrics.leagueCurrentWeight).toBe(1.5);
+    expect(metrics.leagueTraditionalWeight).toBe(0.25);
+    expect(metrics.decisions).toBeGreaterThan(metrics.samples);
+    expect(metrics.samples).toBeGreaterThan(0);
+    expect(metrics.samples).toBeLessThan(metrics.decisions);
+    expect(trained.metadata?.opponentMode).toBe('league');
+    expect(trained.metadata?.leagueOpponentCount).toBe(2);
+    expect(trained.metadata?.leagueCurrentWeight).toBe(1.5);
+    expect(trained.metadata?.leagueTraditionalWeight).toBe(0.25);
   });
 });
 

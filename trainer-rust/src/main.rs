@@ -84,6 +84,9 @@ enum Team {
 enum StartStateMode {
     Open,
     OutcomeCurriculum,
+    OwnGoalDefense,
+    CornerFight,
+    LooseBallContest,
     Mixed,
 }
 
@@ -91,12 +94,16 @@ enum StartStateMode {
 enum ActualStartStateMode {
     Open,
     OutcomeCurriculum,
+    OwnGoalDefense,
+    CornerFight,
+    LooseBallContest,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdvantageBaseline {
     Global,
     StartTeamTime,
+    Learned,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,12 +116,14 @@ enum ActionMode {
 enum OpponentMode {
     SelfPlay,
     Traditional,
+    League,
 }
 
 struct Options {
     mode: Mode,
     weights_path: String,
     opponent_weights_path: Option<String>,
+    league_opponent_weight_paths: Vec<String>,
     data_path: Option<String>,
     output_path: String,
     metrics_output_path: Option<String>,
@@ -135,6 +144,18 @@ struct Options {
     advantage_baseline: AdvantageBaseline,
     action_mode: ActionMode,
     opponent_mode: OpponentMode,
+    league_current_weight: f64,
+    league_traditional_weight: f64,
+}
+
+enum OpponentPolicy {
+    Neural(Vec<f64>),
+    Traditional,
+}
+
+struct LeagueOpponent {
+    policy: OpponentPolicy,
+    weight: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +217,7 @@ struct PendingDecision {
 struct Collection {
     samples: Vec<Sample>,
     decisions: usize,
+    start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
     blue_goals: i32,
@@ -208,6 +230,7 @@ struct TrainingResult {
     trained_samples: usize,
     samples: usize,
     decisions: usize,
+    start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
     blue_goals: i32,
@@ -215,11 +238,23 @@ struct TrainingResult {
     advantage_baseline: AdvantageBaseline,
     action_mode: ActionMode,
     opponent_mode: OpponentMode,
+    league_opponent_count: usize,
+    league_current_weight: f64,
+    league_traditional_weight: f64,
 }
 
 struct PositionEvaluation {
     total: f64,
     corner_escape: f64,
+}
+
+#[derive(Clone, Copy)]
+struct StartFamilyCounts {
+    open: usize,
+    outcome_curriculum: usize,
+    own_goal_defense: usize,
+    corner_fight: usize,
+    loose_ball_contest: usize,
 }
 
 fn main() {
@@ -281,6 +316,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         mode: Mode::BehaviorCloning,
         weights_path: String::new(),
         opponent_weights_path: None,
+        league_opponent_weight_paths: Vec::new(),
         data_path: None,
         output_path: String::new(),
         metrics_output_path: None,
@@ -301,6 +337,8 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         advantage_baseline: AdvantageBaseline::Global,
         action_mode: ActionMode::Raw,
         opponent_mode: OpponentMode::SelfPlay,
+        league_current_weight: 1.0,
+        league_traditional_weight: 0.0,
     };
     let mut index = 0;
     while index < args.len() {
@@ -321,6 +359,11 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
             }
             "--weights" => options.weights_path = value,
             "--opponent-weights" => options.opponent_weights_path = Some(value),
+            "--league-opponent-weights" => options.league_opponent_weight_paths.push(value),
+            "--league-current-weight" => options.league_current_weight = value.parse::<f64>()?.max(0.0),
+            "--league-traditional-weight" => {
+                options.league_traditional_weight = value.parse::<f64>()?.max(0.0)
+            }
             "--data" => options.data_path = Some(value),
             "--output" => options.output_path = value,
             "--metrics-output" => options.metrics_output_path = Some(value),
@@ -341,6 +384,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                 options.start_state_mode = match value.as_str() {
                     "open" => StartStateMode::Open,
                     "outcome-curriculum" => StartStateMode::OutcomeCurriculum,
+                    "own-goal-defense" => StartStateMode::OwnGoalDefense,
+                    "corner-fight" => StartStateMode::CornerFight,
+                    "loose-ball-contest" => StartStateMode::LooseBallContest,
                     "mixed" => StartStateMode::Mixed,
                     _ => return Err(format!("Unknown start-state mode: {value}").into()),
                 }
@@ -349,6 +395,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                 options.advantage_baseline = match value.as_str() {
                     "global" => AdvantageBaseline::Global,
                     "start-team-time" => AdvantageBaseline::StartTeamTime,
+                    "learned" => AdvantageBaseline::Learned,
                     _ => return Err(format!("Unknown advantage baseline: {value}").into()),
                 }
             }
@@ -363,6 +410,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                 options.opponent_mode = match value.as_str() {
                     "self" | "self-play" => OpponentMode::SelfPlay,
                     "traditional" => OpponentMode::Traditional,
+                    "league" => OpponentMode::League,
                     _ => return Err(format!("Unknown opponent mode: {value}").into()),
                 }
             }
@@ -486,6 +534,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         trained_samples,
         samples: collection.samples.len(),
         decisions: collection.decisions,
+        start_families: collection.start_families,
         frames: collection.frames,
         red_goals: collection.red_goals,
         blue_goals: collection.blue_goals,
@@ -493,6 +542,9 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         advantage_baseline: options.advantage_baseline,
         action_mode: options.action_mode,
         opponent_mode: options.opponent_mode,
+        league_opponent_count: options.league_opponent_weight_paths.len(),
+        league_current_weight: options.league_current_weight,
+        league_traditional_weight: options.league_traditional_weight,
     }
 }
 
@@ -505,9 +557,17 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
         .expect("Expected valid opponent weights");
     let opponent_weights_ref = opponent_weights.as_deref().unwrap_or(weights);
     let shared_policy = opponent_weights.is_none();
+    let league_opponents = load_league_opponents(weights, options);
     let mut random = SeededRandom::new(options.seed);
     let frames_per_decision = (PHYSICS_HZ / AI_HZ).max(1);
     let mut all_decisions: Vec<(PendingDecision, f64)> = Vec::new();
+    let mut start_families = StartFamilyCounts {
+        open: 0,
+        outcome_curriculum: 0,
+        own_goal_defense: 0,
+        corner_fight: 0,
+        loose_ball_contest: 0,
+    };
     let mut red_goals = 0;
     let mut blue_goals = 0;
     let mut completed_frames = 0;
@@ -515,11 +575,17 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
 
     for match_index in 0..options.matches {
         let start_state_mode = resolve_start_state_mode(options.start_state_mode, match_index);
+        increment_start_family(&mut start_families, start_state_mode);
         let mut state = seeded_initial_state(&mut random, match_index, start_state_mode);
         let train_team = if match_index % 2 == 0 {
             Team::Red
         } else {
             Team::Blue
+        };
+        let league_opponent_index = if options.opponent_mode == OpponentMode::League {
+            Some(sample_league_opponent(&league_opponents, &mut random))
+        } else {
+            None
         };
         let mut pending: Vec<PendingDecision> = Vec::new();
         let mut goals: Vec<GoalEvent> = Vec::new();
@@ -555,6 +621,18 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                             (traditional_team_command(&state, Team::Red), None)
                         }
                     }
+                    OpponentMode::League => league_team_decision(
+                        &state,
+                        Team::Red,
+                        train_team,
+                        league_opponent_index.expect("league opponent index"),
+                        weights,
+                        &league_opponents,
+                        options.temperature,
+                        &mut random,
+                        start_state_mode,
+                        options.action_mode,
+                    ),
                 };
                 let blue_decision = match options.opponent_mode {
                     OpponentMode::SelfPlay => sample_team_decision(
@@ -583,6 +661,18 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                             (traditional_team_command(&state, Team::Blue), None)
                         }
                     }
+                    OpponentMode::League => league_team_decision(
+                        &state,
+                        Team::Blue,
+                        train_team,
+                        league_opponent_index.expect("league opponent index"),
+                        weights,
+                        &league_opponents,
+                        options.temperature,
+                        &mut random,
+                        start_state_mode,
+                        options.action_mode,
+                    ),
                 };
                 red_command = red_decision.0;
                 blue_command = blue_decision.0;
@@ -643,10 +733,121 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     Collection {
         samples,
         decisions: decision_count,
+        start_families,
         frames: completed_frames,
         red_goals,
         blue_goals,
         final_state,
+    }
+}
+
+fn load_league_opponents(weights: &[f64], options: &Options) -> Vec<LeagueOpponent> {
+    if options.opponent_mode != OpponentMode::League {
+        return Vec::new();
+    }
+
+    let mut opponents = Vec::new();
+    if options.league_current_weight > 0.0 {
+        opponents.push(LeagueOpponent {
+            policy: OpponentPolicy::Neural(weights.to_vec()),
+            weight: options.league_current_weight,
+        });
+    }
+    if let Some(path) = &options.opponent_weights_path {
+        opponents.push(LeagueOpponent {
+            policy: OpponentPolicy::Neural(load_weights(path).expect("Expected valid opponent weights")),
+            weight: 1.0,
+        });
+    }
+    for path in &options.league_opponent_weight_paths {
+        opponents.push(LeagueOpponent {
+            policy: OpponentPolicy::Neural(load_weights(path).expect("Expected valid league opponent weights")),
+            weight: 1.0,
+        });
+    }
+    if options.league_traditional_weight > 0.0 {
+        opponents.push(LeagueOpponent {
+            policy: OpponentPolicy::Traditional,
+            weight: options.league_traditional_weight,
+        });
+    }
+
+    if opponents.is_empty() {
+        opponents.push(LeagueOpponent {
+            policy: OpponentPolicy::Neural(weights.to_vec()),
+            weight: 1.0,
+        });
+    }
+
+    opponents
+}
+
+fn sample_league_opponent(opponents: &[LeagueOpponent], random: &mut SeededRandom) -> usize {
+    let total_weight = opponents
+        .iter()
+        .map(|opponent| opponent.weight.max(0.0))
+        .sum::<f64>();
+    if total_weight <= 0.0 {
+        return 0;
+    }
+
+    let mut cursor = random.next() * total_weight;
+    for (index, opponent) in opponents.iter().enumerate() {
+        cursor -= opponent.weight.max(0.0);
+        if cursor <= 0.0 {
+            return index;
+        }
+    }
+    opponents.len().saturating_sub(1)
+}
+
+fn league_team_decision(
+    state: &GameState,
+    team: Team,
+    train_team: Team,
+    opponent_index: usize,
+    weights: &[f64],
+    opponents: &[LeagueOpponent],
+    temperature: f64,
+    random: &mut SeededRandom,
+    start_state_mode: ActualStartStateMode,
+    action_mode: ActionMode,
+) -> (Command, Option<PendingDecision>) {
+    if team == train_team {
+        return sample_team_decision(
+            state,
+            team,
+            weights,
+            temperature,
+            random,
+            true,
+            start_state_mode,
+            action_mode,
+        );
+    }
+
+    match &opponents[opponent_index].policy {
+        OpponentPolicy::Neural(opponent_weights) => sample_team_decision(
+            state,
+            team,
+            opponent_weights,
+            temperature,
+            random,
+            false,
+            start_state_mode,
+            action_mode,
+        ),
+        OpponentPolicy::Traditional => (traditional_team_command(state, team), None),
+    }
+}
+
+fn increment_start_family(counts: &mut StartFamilyCounts, mode: ActualStartStateMode) {
+    match mode {
+        ActualStartStateMode::Open => counts.open += 1,
+        ActualStartStateMode::OutcomeCurriculum => counts.outcome_curriculum += 1,
+        ActualStartStateMode::OwnGoalDefense => counts.own_goal_defense += 1,
+        ActualStartStateMode::CornerFight => counts.corner_fight += 1,
+        ActualStartStateMode::LooseBallContest => counts.loose_ball_contest += 1,
     }
 }
 
@@ -1510,6 +1711,10 @@ fn normalized_advantages(decisions: &[(PendingDecision, f64)], baseline: Advanta
     } else {
         trainable
     };
+    if baseline == AdvantageBaseline::Learned {
+        return learned_value_advantages(decisions, &population);
+    }
+
     let global = advantage_stats(population.iter().map(|(_, value)| *value).collect());
     let groups = if baseline == AdvantageBaseline::StartTeamTime {
         grouped_advantage_stats(&population)
@@ -1528,6 +1733,66 @@ fn normalized_advantages(decisions: &[(PendingDecision, f64)], baseline: Advanta
             normalize_return(*value, stats)
         })
         .collect()
+}
+
+fn learned_value_advantages(
+    decisions: &[(PendingDecision, f64)],
+    population: &[&(PendingDecision, f64)],
+) -> Vec<f64> {
+    let returns: Vec<f64> = population.iter().map(|(_, value)| *value).collect();
+    let stats = advantage_stats(returns);
+    let value_weights = fit_linear_value_baseline(population, stats.mean);
+    let residuals: Vec<f64> = population
+        .iter()
+        .map(|(decision, value)| *value - predict_linear_value(&decision.inputs, &value_weights))
+        .collect();
+    let residual_mean = if residuals.is_empty() {
+        0.0
+    } else {
+        residuals.iter().sum::<f64>() / residuals.len() as f64
+    };
+    let scale = stats.std.max(1e-6);
+
+    decisions
+        .iter()
+        .map(|(decision, value)| {
+            (*value - predict_linear_value(&decision.inputs, &value_weights) - residual_mean) / scale
+        })
+        .collect()
+}
+
+fn fit_linear_value_baseline(
+    population: &[&(PendingDecision, f64)],
+    fallback_mean: f64,
+) -> Vec<f64> {
+    let mut weights = vec![0.0; INPUT_COUNT + 1];
+    weights[INPUT_COUNT] = fallback_mean;
+    if population.len() < 2 {
+        return weights;
+    }
+
+    let learning_rate = 0.02;
+    let l2 = 0.001;
+    for _ in 0..80 {
+        for (decision, value) in population {
+            let prediction = predict_linear_value(&decision.inputs, &weights);
+            let error = prediction - *value;
+            for index in 0..INPUT_COUNT {
+                weights[index] -= learning_rate * (error * decision.inputs[index] + l2 * weights[index]);
+            }
+            weights[INPUT_COUNT] -= learning_rate * error;
+        }
+    }
+
+    weights
+}
+
+fn predict_linear_value(inputs: &[f64; INPUT_COUNT], weights: &[f64]) -> f64 {
+    let mut value = weights[INPUT_COUNT];
+    for index in 0..INPUT_COUNT {
+        value += inputs[index] * weights[index];
+    }
+    value
 }
 
 #[derive(Clone, Copy)]
@@ -1578,6 +1843,9 @@ fn advantage_group_key(decision: &PendingDecision) -> String {
     let start = match decision.start_state_mode {
         ActualStartStateMode::Open => "open",
         ActualStartStateMode::OutcomeCurriculum => "outcome-curriculum",
+        ActualStartStateMode::OwnGoalDefense => "own-goal-defense",
+        ActualStartStateMode::CornerFight => "corner-fight",
+        ActualStartStateMode::LooseBallContest => "loose-ball-contest",
     };
     let team = match decision.team {
         Team::Red => "red",
@@ -1666,6 +1934,12 @@ fn seeded_initial_state(
 
     if mode == ActualStartStateMode::OutcomeCurriculum {
         place_outcome_curriculum_state(&mut state, match_index, random);
+    } else if mode == ActualStartStateMode::OwnGoalDefense {
+        place_own_goal_defense_state(&mut state, match_index, random);
+    } else if mode == ActualStartStateMode::CornerFight {
+        place_corner_fight_state(&mut state, match_index, random);
+    } else if mode == ActualStartStateMode::LooseBallContest {
+        place_loose_ball_contest_state(&mut state, match_index, random);
     }
 
     state
@@ -1675,11 +1949,16 @@ fn resolve_start_state_mode(mode: StartStateMode, match_index: usize) -> ActualS
     match mode {
         StartStateMode::Open => ActualStartStateMode::Open,
         StartStateMode::OutcomeCurriculum => ActualStartStateMode::OutcomeCurriculum,
+        StartStateMode::OwnGoalDefense => ActualStartStateMode::OwnGoalDefense,
+        StartStateMode::CornerFight => ActualStartStateMode::CornerFight,
+        StartStateMode::LooseBallContest => ActualStartStateMode::LooseBallContest,
         StartStateMode::Mixed => {
-            if match_index % 2 == 0 {
-                ActualStartStateMode::Open
-            } else {
-                ActualStartStateMode::OutcomeCurriculum
+            match match_index % 5 {
+                0 => ActualStartStateMode::Open,
+                1 => ActualStartStateMode::OutcomeCurriculum,
+                2 => ActualStartStateMode::OwnGoalDefense,
+                3 => ActualStartStateMode::CornerFight,
+                _ => ActualStartStateMode::LooseBallContest,
             }
         }
     }
@@ -1758,6 +2037,122 @@ fn place_outcome_curriculum_state(
     state.tanks[1].velocity = Vec2 { x: 0.0, y: 0.0 };
     state.tanks[1].angular_velocity = 0.0;
     state.tanks[1].stamina = TANK_STAMINA;
+}
+
+fn place_own_goal_defense_state(
+    state: &mut GameState,
+    match_index: usize,
+    random: &mut SeededRandom,
+) {
+    let defending_team = if match_index % 2 == 0 { Team::Red } else { Team::Blue };
+    place_ball_in_team_frame(
+        state,
+        defending_team,
+        92.0 + random.next() * 55.0,
+        FIELD_WIDTH / 2.0 + (random.next() - 0.5) * GOAL_MOUTH * 0.65,
+        -170.0 - random.next() * 90.0,
+        (random.next() - 0.5) * 75.0,
+    );
+    place_tank_in_team_frame(
+        state,
+        defending_team,
+        150.0 + random.next() * 52.0,
+        FIELD_WIDTH / 2.0 + (random.next() - 0.5) * 120.0,
+        (random.next() - 0.5) * 0.45,
+    );
+    place_tank_in_team_frame(
+        state,
+        opponent_team(defending_team),
+        250.0 + random.next() * 80.0,
+        FIELD_WIDTH / 2.0 + (random.next() - 0.5) * 170.0,
+        std::f64::consts::PI + (random.next() - 0.5) * 0.7,
+    );
+}
+
+fn place_corner_fight_state(
+    state: &mut GameState,
+    match_index: usize,
+    random: &mut SeededRandom,
+) {
+    let attacking_team = if match_index % 2 == 0 { Team::Red } else { Team::Blue };
+    let side = if random.next() < 0.5 { -1.0 } else { 1.0 };
+    let y = if side < 0.0 {
+        BALL_RADIUS + 10.0 + random.next() * 22.0
+    } else {
+        FIELD_WIDTH - BALL_RADIUS - 10.0 - random.next() * 22.0
+    };
+    place_ball_in_team_frame(
+        state,
+        attacking_team,
+        FIELD_LENGTH - BALL_RADIUS - 38.0 - random.next() * 34.0,
+        y,
+        20.0 + random.next() * 40.0,
+        -side * (30.0 + random.next() * 70.0),
+    );
+    place_tank_in_team_frame(
+        state,
+        attacking_team,
+        FIELD_LENGTH - 185.0 - random.next() * 55.0,
+        y + side * (82.0 + random.next() * 35.0),
+        -side * 0.8,
+    );
+    place_tank_in_team_frame(
+        state,
+        opponent_team(attacking_team),
+        150.0 + random.next() * 80.0,
+        FIELD_WIDTH - y - side * (68.0 + random.next() * 45.0),
+        std::f64::consts::PI + side * 0.55,
+    );
+}
+
+fn place_loose_ball_contest_state(
+    state: &mut GameState,
+    match_index: usize,
+    random: &mut SeededRandom,
+) {
+    let attacking_team = if match_index % 2 == 0 { Team::Red } else { Team::Blue };
+    let x = FIELD_LENGTH / 2.0 + (random.next() - 0.5) * FIELD_LENGTH * 0.18;
+    let y = FIELD_WIDTH / 2.0 + (random.next() - 0.5) * FIELD_WIDTH * 0.28;
+    place_ball_in_team_frame(
+        state,
+        attacking_team,
+        x,
+        y,
+        (random.next() - 0.5) * 160.0,
+        (random.next() - 0.5) * 120.0,
+    );
+    place_tank_in_team_frame(
+        state,
+        attacking_team,
+        x - 135.0 - random.next() * 45.0,
+        y + (random.next() - 0.5) * 80.0,
+        (random.next() - 0.5) * 0.6,
+    );
+    place_tank_in_team_frame(
+        state,
+        opponent_team(attacking_team),
+        FIELD_LENGTH - x - 135.0 - random.next() * 45.0,
+        FIELD_WIDTH - y + (random.next() - 0.5) * 80.0,
+        (random.next() - 0.5) * 0.6,
+    );
+}
+
+fn place_tank_in_team_frame(
+    state: &mut GameState,
+    team: Team,
+    attack_x: f64,
+    attack_y: f64,
+    attack_angle: f64,
+) {
+    let index = match team {
+        Team::Red => 0,
+        Team::Blue => 1,
+    };
+    state.tanks[index].position = field_point(team, attack_x, attack_y);
+    state.tanks[index].angle = field_angle(team, attack_angle);
+    state.tanks[index].velocity = Vec2 { x: 0.0, y: 0.0 };
+    state.tanks[index].angular_velocity = 0.0;
+    state.tanks[index].stamina = TANK_STAMINA;
 }
 
 fn place_ball_in_team_frame(
@@ -2812,6 +3207,9 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             match options.start_state_mode {
                 StartStateMode::Open => "open",
                 StartStateMode::OutcomeCurriculum => "outcome-curriculum",
+                StartStateMode::OwnGoalDefense => "own-goal-defense",
+                StartStateMode::CornerFight => "corner-fight",
+                StartStateMode::LooseBallContest => "loose-ball-contest",
                 StartStateMode::Mixed => "mixed",
             }
         ));
@@ -2820,6 +3218,7 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             match options.advantage_baseline {
                 AdvantageBaseline::Global => "global",
                 AdvantageBaseline::StartTeamTime => "start-team-time",
+                AdvantageBaseline::Learned => "learned",
             }
         ));
         output.push_str(&format!(
@@ -2834,8 +3233,23 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
                 OpponentMode::Traditional => "traditional",
+                OpponentMode::League => "league",
             }
         ));
+        if options.opponent_mode == OpponentMode::League {
+            output.push_str(&format!(
+                ",\n    \"leagueOpponentCount\": {}",
+                options.league_opponent_weight_paths.len()
+            ));
+            output.push_str(&format!(
+                ",\n    \"leagueCurrentWeight\": {}",
+                options.league_current_weight
+            ));
+            output.push_str(&format!(
+                ",\n    \"leagueTraditionalWeight\": {}",
+                options.league_traditional_weight
+            ));
+        }
     }
     output.push_str("\n  }\n}\n");
     output
@@ -2854,6 +3268,16 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"advantageBaseline\": \"{}\",\n",
             "  \"actionMode\": \"{}\",\n",
             "  \"opponentMode\": \"{}\",\n",
+            "  \"leagueOpponentCount\": {},\n",
+            "  \"leagueCurrentWeight\": {},\n",
+            "  \"leagueTraditionalWeight\": {},\n",
+            "  \"startFamilies\": {{\n",
+            "    \"open\": {},\n",
+            "    \"outcomeCurriculum\": {},\n",
+            "    \"ownGoalDefense\": {},\n",
+            "    \"cornerFight\": {},\n",
+            "    \"looseBallContest\": {}\n",
+            "  }},\n",
             "  \"loss\": {:.17},\n",
             "  \"finalBallX\": {:.17},\n",
             "  \"finalBallY\": {:.17}\n",
@@ -2868,6 +3292,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         match result.advantage_baseline {
             AdvantageBaseline::Global => "global",
             AdvantageBaseline::StartTeamTime => "start-team-time",
+            AdvantageBaseline::Learned => "learned",
         },
         match result.action_mode {
             ActionMode::Raw => "raw",
@@ -2876,7 +3301,16 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",
+            OpponentMode::League => "league",
         },
+        result.league_opponent_count,
+        result.league_current_weight,
+        result.league_traditional_weight,
+        result.start_families.open,
+        result.start_families.outcome_curriculum,
+        result.start_families.own_goal_defense,
+        result.start_families.corner_fight,
+        result.start_families.loose_ball_contest,
         result.loss,
         result.final_state.ball.position.x,
         result.final_state.ball.position.y

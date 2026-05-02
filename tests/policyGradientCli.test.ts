@@ -35,7 +35,7 @@ describe('policy-gradient CLI trainer', () => {
       '--start-state-mode',
       'mixed',
       '--advantage-baseline',
-      'start-team-time',
+      'learned',
       '--action-mode',
       'runtime',
       '--opponent-mode',
@@ -59,11 +59,38 @@ describe('policy-gradient CLI trainer', () => {
       temperature: 1.15,
       discount: 0.97,
       startStateMode: 'mixed',
-      advantageBaseline: 'start-team-time',
+      advantageBaseline: 'learned',
       actionMode: 'runtime',
       opponentMode: 'traditional',
       native: true,
       nativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe'
+    });
+  });
+
+  it('parses native league opponent sampling options', () => {
+    const options = parsePolicyGradientArgs([
+      '--native',
+      '--opponent-mode',
+      'league',
+      '--league-opponent-weights',
+      'training-runs/recent-a.json',
+      '--league-opponent-weights',
+      'training-runs/historical-b.json',
+      '--league-current-weight',
+      '1.5',
+      '--league-traditional-weight',
+      '0.2'
+    ]);
+
+    expect(options).toMatchObject({
+      native: true,
+      opponentMode: 'league',
+      leagueOpponentWeights: [
+        'training-runs/recent-a.json',
+        'training-runs/historical-b.json'
+      ],
+      leagueCurrentWeight: 1.5,
+      leagueTraditionalWeight: 0.2
     });
   });
 

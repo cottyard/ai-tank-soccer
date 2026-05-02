@@ -19,7 +19,7 @@ declare const process: {
   platform: string;
 };
 
-type PolicyGradientCliOptions = {
+export type PolicyGradientCliOptions = {
   input?: string;
   output?: string;
   metricsOutput?: string;
@@ -35,7 +35,10 @@ type PolicyGradientCliOptions = {
   startStateMode: PolicyGradientStartStateMode;
   advantageBaseline: PolicyGradientAdvantageBaseline;
   actionMode: 'raw' | 'runtime';
-  opponentMode: 'self' | 'traditional';
+  opponentMode: 'self' | 'traditional' | 'league';
+  leagueOpponentWeights: string[];
+  leagueCurrentWeight: number;
+  leagueTraditionalWeight: number;
   native: boolean;
   nativeBin?: string;
 };
@@ -54,6 +57,9 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   advantageBaseline: 'global',
   actionMode: 'raw',
   opponentMode: 'self',
+  leagueOpponentWeights: [],
+  leagueCurrentWeight: 1,
+  leagueTraditionalWeight: 0,
   native: false
 };
 
@@ -75,12 +81,18 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
     actionMode: actionModeArg(argv, '--action-mode', DEFAULT_OPTIONS.actionMode),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
+    leagueOpponentWeights: stringArgs(argv, '--league-opponent-weights'),
+    leagueCurrentWeight: Math.max(0, numberArg(argv, '--league-current-weight', DEFAULT_OPTIONS.leagueCurrentWeight)),
+    leagueTraditionalWeight: Math.max(0, numberArg(argv, '--league-traditional-weight', DEFAULT_OPTIONS.leagueTraditionalWeight)),
     native: argv.includes('--native'),
     nativeBin: stringArg(argv, '--native-bin')
   };
 }
 
 export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyGradientTrainingResult {
+  if (!options.native && options.opponentMode === 'league') {
+    throw new Error('League opponent sampling requires the native trainer.');
+  }
   if (options.native) {
     return runNativePolicyGradientCli(options);
   }
@@ -135,12 +147,7 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
   const weightsPath = options.input ?? join(workdir, 'weights.json');
   const outputPath = options.output ?? join(workdir, 'trained.json');
   const metricsPath = options.metricsOutput ?? join(workdir, 'metrics.json');
-
-  if (!options.input) {
-    writeFileSync(weightsPath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
-  }
-
-  execFileSync(nativeBin, [
+  const args = [
     '--mode',
     'policy-gradient',
     '--weights',
@@ -174,8 +181,22 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     '--action-mode',
     options.actionMode,
     '--opponent-mode',
-    options.opponentMode
-  ], { stdio: 'pipe' });
+    options.opponentMode,
+    '--league-current-weight',
+    String(options.leagueCurrentWeight),
+    '--league-traditional-weight',
+    String(options.leagueTraditionalWeight)
+  ];
+
+  if (!options.input) {
+    writeFileSync(weightsPath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
+  }
+
+  for (const path of options.leagueOpponentWeights) {
+    args.push('--league-opponent-weights', path);
+  }
+
+  execFileSync(nativeBin, args, { stdio: 'pipe' });
 
   const weights = loadWeightsPayload(readFileSync(outputPath, 'utf8'));
   const metrics = parseNativeMetrics(readFileSync(metricsPath, 'utf8'));
@@ -292,6 +313,16 @@ function stringArg(argv: readonly string[], name: string): string | undefined {
   return valueAfter(argv, name);
 }
 
+function stringArgs(argv: readonly string[], name: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < argv.length - 1; index += 1) {
+    if (argv[index] === name) {
+      values.push(argv[index + 1]);
+    }
+  }
+  return values;
+}
+
 function valueAfter(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   if (index === -1 || index === argv.length - 1) {
@@ -317,7 +348,7 @@ function advantageBaselineArg(
   fallback: PolicyGradientAdvantageBaseline
 ): PolicyGradientAdvantageBaseline {
   const value = valueAfter(argv, name);
-  return value === 'global' || value === 'start-team-time'
+  return value === 'global' || value === 'start-team-time' || value === 'learned'
     ? value
     : fallback;
 }
@@ -336,10 +367,10 @@ function actionModeArg(
 function opponentModeArg(
   argv: readonly string[],
   name: string,
-  fallback: 'self' | 'traditional'
-): 'self' | 'traditional' {
+  fallback: 'self' | 'traditional' | 'league'
+): 'self' | 'traditional' | 'league' {
   const value = valueAfter(argv, name);
-  return value === 'self' || value === 'traditional'
+  return value === 'self' || value === 'traditional' || value === 'league'
     ? value
     : fallback;
 }

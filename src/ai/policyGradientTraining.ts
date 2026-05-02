@@ -6,6 +6,7 @@ import { actionIndexToCommand, POLICY_ACTION_COUNT } from './policyActions';
 import { extractTankInputs } from './neuralStrategy';
 import {
   evaluatePolicy,
+  POLICY_INPUT_COUNT,
   policyProbabilities,
   trainPolicyGradientBatch,
   type PolicyGradientSample,
@@ -23,8 +24,8 @@ export type PolicyGradientDecision = PolicyGradientSample & {
 };
 
 export type PolicyGradientStartStateMode = ActualStartStateMode | 'mixed';
-export type PolicyGradientAdvantageBaseline = 'global' | 'start-team-time';
-type ActualStartStateMode = 'open' | 'outcome-curriculum';
+export type PolicyGradientAdvantageBaseline = 'global' | 'start-team-time' | 'learned';
+type ActualStartStateMode = 'open' | 'outcome-curriculum' | 'own-goal-defense' | 'corner-fight' | 'loose-ball-contest';
 
 export type PolicyGradientCollectionOptions = {
   weights: PolicyWeights;
@@ -304,6 +305,10 @@ function withNormalizedAdvantages(
   }
 
   const population = decisions.filter((decision) => decision.trainable);
+  if (baseline === 'learned') {
+    return withLearnedValueAdvantages(decisions, population.length > 0 ? population : decisions);
+  }
+
   const globalStats = advantageStats(population.length > 0 ? population : decisions);
   const groupedStats = baseline === 'start-team-time'
     ? buildGroupedAdvantageStats(population.length > 0 ? population : decisions)
@@ -316,6 +321,57 @@ function withNormalizedAdvantages(
       groupedStats.get(advantageGroupKey(decision)) ?? globalStats
     )
   }));
+}
+
+function withLearnedValueAdvantages(
+  decisions: readonly PolicyGradientDecision[],
+  population: readonly PolicyGradientDecision[]
+): PolicyGradientDecision[] {
+  const stats = advantageStats(population);
+  const valueWeights = fitLinearValueBaseline(population, stats.mean);
+  const residuals = population.map((decision) => decision.return - predictLinearValue(decision.inputs, valueWeights));
+  const residualMean = residuals.reduce((sum, value) => sum + value, 0) / Math.max(1, residuals.length);
+  const scale = Math.max(stats.std, 1e-6);
+
+  return decisions.map((decision) => ({
+    ...decision,
+    advantage: (decision.return - predictLinearValue(decision.inputs, valueWeights) - residualMean) / scale
+  }));
+}
+
+function fitLinearValueBaseline(
+  decisions: readonly PolicyGradientDecision[],
+  fallbackMean: number
+): number[] {
+  const weights = Array.from({ length: POLICY_INPUT_COUNT + 1 }, (_, index) =>
+    index === POLICY_INPUT_COUNT ? fallbackMean : 0
+  );
+  if (decisions.length < 2) {
+    return weights;
+  }
+
+  const learningRate = 0.02;
+  const l2 = 0.001;
+  for (let epoch = 0; epoch < 80; epoch += 1) {
+    for (const decision of decisions) {
+      const prediction = predictLinearValue(decision.inputs, weights);
+      const error = prediction - decision.return;
+      for (let index = 0; index < POLICY_INPUT_COUNT; index += 1) {
+        weights[index] -= learningRate * (error * decision.inputs[index] + l2 * weights[index]);
+      }
+      weights[POLICY_INPUT_COUNT] -= learningRate * error;
+    }
+  }
+
+  return weights;
+}
+
+function predictLinearValue(inputs: readonly number[], weights: readonly number[]): number {
+  let value = weights[POLICY_INPUT_COUNT] ?? 0;
+  for (let index = 0; index < POLICY_INPUT_COUNT; index += 1) {
+    value += (inputs[index] ?? 0) * (weights[index] ?? 0);
+  }
+  return value;
 }
 
 type AdvantageStats = {
@@ -420,6 +476,12 @@ function createSeededInitialState(
 
   if (mode === 'outcome-curriculum') {
     placeOutcomeCurriculumState(state, match, random);
+  } else if (mode === 'own-goal-defense') {
+    placeOwnGoalDefenseState(state, match, random);
+  } else if (mode === 'corner-fight') {
+    placeCornerFightState(state, match, random);
+  } else if (mode === 'loose-ball-contest') {
+    placeLooseBallContestState(state, match, random);
   }
 
   return state;
@@ -427,7 +489,14 @@ function createSeededInitialState(
 
 function resolveStartStateMode(mode: PolicyGradientStartStateMode, match: number): ActualStartStateMode {
   if (mode === 'mixed') {
-    return match % 2 === 0 ? 'open' : 'outcome-curriculum';
+    const modes: ActualStartStateMode[] = [
+      'open',
+      'outcome-curriculum',
+      'own-goal-defense',
+      'corner-fight',
+      'loose-ball-contest'
+    ];
+    return modes[match % modes.length];
   }
   return mode;
 }
@@ -495,6 +564,84 @@ function placeOutcomeCurriculumState(
     blue.velocity = { x: 0, y: 0 };
     blue.angularVelocity = 0;
   }
+}
+
+function placeOwnGoalDefenseState(
+  state: GameState,
+  match: number,
+  random: () => number
+): void {
+  const defendingTeam: Team = match % 2 === 0 ? 'red' : 'blue';
+  placeBallInTeamFrame(
+    state,
+    defendingTeam,
+    92 + random() * 55,
+    FIELD.width / 2 + (random() - 0.5) * FIELD.goalMouth * 0.65,
+    -170 - random() * 90,
+    (random() - 0.5) * 75
+  );
+  placeTank(state, defendingTeam, 150 + random() * 52, FIELD.width / 2 + (random() - 0.5) * 120, (random() - 0.5) * 0.45);
+  placeTank(state, defendingTeam === 'red' ? 'blue' : 'red', 250 + random() * 80, FIELD.width / 2 + (random() - 0.5) * 170, Math.PI + (random() - 0.5) * 0.7);
+}
+
+function placeCornerFightState(
+  state: GameState,
+  match: number,
+  random: () => number
+): void {
+  const attackingTeam: Team = match % 2 === 0 ? 'red' : 'blue';
+  const side = random() < 0.5 ? -1 : 1;
+  const y = side < 0
+    ? FIELD.ballRadius + 10 + random() * 22
+    : FIELD.width - FIELD.ballRadius - 10 - random() * 22;
+  placeBallInTeamFrame(
+    state,
+    attackingTeam,
+    FIELD.length - FIELD.ballRadius - 38 - random() * 34,
+    y,
+    20 + random() * 40,
+    -side * (30 + random() * 70)
+  );
+  placeTank(state, attackingTeam, FIELD.length - 185 - random() * 55, y + side * (82 + random() * 35), -side * 0.8);
+  placeTank(state, attackingTeam === 'red' ? 'blue' : 'red', 150 + random() * 80, FIELD.width - y + -side * (68 + random() * 45), Math.PI + side * 0.55);
+}
+
+function placeLooseBallContestState(
+  state: GameState,
+  match: number,
+  random: () => number
+): void {
+  const attackingTeam: Team = match % 2 === 0 ? 'red' : 'blue';
+  const x = FIELD.length / 2 + (random() - 0.5) * FIELD.length * 0.18;
+  const y = FIELD.width / 2 + (random() - 0.5) * FIELD.width * 0.28;
+  placeBallInTeamFrame(
+    state,
+    attackingTeam,
+    x,
+    y,
+    (random() - 0.5) * 160,
+    (random() - 0.5) * 120
+  );
+  placeTank(state, attackingTeam, x - 135 - random() * 45, y + (random() - 0.5) * 80, (random() - 0.5) * 0.6);
+  placeTank(state, attackingTeam === 'red' ? 'blue' : 'red', FIELD.length - x - 135 - random() * 45, FIELD.width - y + (random() - 0.5) * 80, (random() - 0.5) * 0.6);
+}
+
+function placeTank(
+  state: GameState,
+  team: Team,
+  attackFrameX: number,
+  attackFrameY: number,
+  attackFrameAngle: number
+): void {
+  const tank = state.tanks.find((candidate) => candidate.team === team && candidate.index === 0);
+  if (!tank) {
+    return;
+  }
+  tank.position = fieldPoint(team, attackFrameX, attackFrameY);
+  tank.angle = fieldAngle(team, attackFrameAngle);
+  tank.velocity = { x: 0, y: 0 };
+  tank.angularVelocity = 0;
+  tank.stamina = tank.maxStamina;
 }
 
 function placeBallInTeamFrame(

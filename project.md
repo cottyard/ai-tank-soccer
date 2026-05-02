@@ -52,15 +52,24 @@ Prefer self-play reinforcement learning over hand-authored tactical labels. Olde
 
 Current sparse-reward PPO supports:
 
-- open, outcome-curriculum, and mixed starts;
+- open, outcome-curriculum, own-goal-defense, corner-fight, loose-ball-contest, and mixed starts;
 - runtime-like action execution in the Rust sampler;
 - frozen opponent weights;
 - traditional opponent mode for diagnostics/stabilization;
+- weighted league opponent sampling from current, recent, historical, and traditional opponents;
 - PPO clipping through old action probability;
-- advantage normalization with `global` or `start-team-time` baselines;
+- advantage normalization with `global`, `start-team-time`, or `learned` baselines;
 - trainable-only sample filtering when playing against frozen or traditional opponents.
 
 Rewards should stay tied to outcomes: future goals for/against and final win/loss/draw. Start-state curriculum is acceptable; shaped tactical rewards should be separate, documented, and used sparingly.
+
+## Development Principles
+
+At the end of every work session, evaluate each training method and existing mechanism against the latest gate results, diagnostics, and implementation evidence. Keep methods that produce measurable progress, keep uncertain methods only as documented diagnostics, and remove or de-prioritize mechanisms that repeatedly fail to improve the accepted runtime policy.
+
+When local evidence does not show a clear next path for improving training, use internet research to look for stronger reinforcement learning, self-play, optimization, or evaluation methods. From this environment, route that research through the local HTTP proxy `http://127.0.0.1:10808`, prefer credible primary sources, and record only ideas that can be tested in this project.
+
+Maintain `project.md` as the working memory for the project. Update it promptly when commands, accepted models, training results, useful lessons, or rejected approaches change; keep useful experience, remove stale or low-signal information, and avoid preserving failed experiments as recommendations.
 
 ## Promotion Rules
 
@@ -119,7 +128,7 @@ npx tsx scripts/train-policy-gradient.ts `
   --temperature 1.1 `
   --discount 0.996 `
   --start-state-mode mixed `
-  --advantage-baseline start-team-time `
+  --advantage-baseline learned `
   --action-mode runtime `
   --opponent-mode self
 ```
@@ -150,16 +159,28 @@ for (const [name, path] of candidates) {
 '@ | npx tsx -
 ```
 
+Automated native PPO promotion loop:
+
+```powershell
+npx tsx scripts/promote-policy-gradient.ts
+```
+
+This trains a candidate from `public/models/neural-best.json`, samples native PPO opponents from a weighted league, uses the learned value baseline for sparse-return variance reduction, cycles mixed starts across open, outcome-curriculum, own-goal defense, corner fights, and loose-ball contests, runs the standard runtime gate and then the holdout runtime gate, writes `training-runs/neural-promotion-summary-s2026050208.json`, appends a compact entry to `training-runs/neural-promotion-history.jsonl`, and replaces `public/models/neural-best.json` only if both gates pass without meaningful goals or win-proxy regression. Use `--no-promote` for a dry run.
+
+League opponents can include the current accepted model, extra snapshots, and a low-weight traditional stabilizer:
+
+```powershell
+npx tsx scripts/promote-policy-gradient.ts `
+  --league-opponent-weights training-runs/recent-snapshot.json `
+  --league-current-weight 1 `
+  --league-traditional-weight 0.15
+```
+
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Build an automated promotion loop that trains, runs standard gate, runs holdout gate, writes a concise metrics summary, and only then updates `public/models/neural-best.json`.
-2. Add a real league sampler for native PPO: current accepted model, recent snapshots, selected historical accepted models, and traditional strategy as a low-weight stabilizer.
-3. Add a learned value baseline or actor-critic path to reduce sparse-reward variance beyond grouped return baselines.
-4. Expand mixed starts while keeping rewards outcome-based: gate-style open starts, outcome-curriculum starts, own-goal defense, side-wall/corner fights, and loose-ball contests.
-5. Track candidate history in a small committed summary file or generated ignored metrics file, so future sessions can compare hyperparameters without reading every `training-runs/` artifact.
-6. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
+1. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 
 Avoid spending mainline time on output-bias hill climbing, stamina-threshold tuning, or local black-box weight probes. They overfit quickly and should remain diagnostics only.
 
