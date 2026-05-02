@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   parsePromotionLoopArgs,
   runPromotionLoop,
@@ -10,6 +10,35 @@ import {
 import type { PolicyGradientCliOptions } from '../scripts/train-policy-gradient';
 import { serializeWeightsPayload } from '../scripts/coach-neural';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
+
+const defaultHistoryPath = join(process.cwd(), 'training-runs/neural-promotion-history.jsonl');
+let defaultHistorySnapshot: string | undefined;
+
+beforeEach(() => {
+  defaultHistorySnapshot = existsSync(defaultHistoryPath)
+    ? readFileSync(defaultHistoryPath, 'utf8')
+    : undefined;
+});
+
+afterEach(() => {
+  const currentHistory = existsSync(defaultHistoryPath)
+    ? readFileSync(defaultHistoryPath, 'utf8')
+    : undefined;
+  const changed = currentHistory !== defaultHistorySnapshot;
+
+  try {
+    expect(changed).toBe(false);
+  } finally {
+    if (defaultHistorySnapshot === undefined) {
+      if (existsSync(defaultHistoryPath)) {
+        unlinkSync(defaultHistoryPath);
+      }
+    } else {
+      mkdirSync(dirname(defaultHistoryPath), { recursive: true });
+      writeFileSync(defaultHistoryPath, defaultHistorySnapshot, 'utf8');
+    }
+  }
+});
 
 describe('policy-gradient promotion loop', () => {
   it('defaults to the current native PPO promotion recipe and fixed runtime gates', () => {
@@ -62,7 +91,9 @@ describe('policy-gradient promotion loop', () => {
         '--candidate-output',
         join(workdir, 'candidate.json'),
         '--candidate-metrics-output',
-        join(workdir, 'candidate-metrics.json')
+        join(workdir, 'candidate-metrics.json'),
+        '--history-output',
+        join(workdir, 'history.jsonl')
       ]),
       standardSeeds: [19, 31],
       holdoutSeeds: [83, 97]
@@ -116,7 +147,9 @@ describe('policy-gradient promotion loop', () => {
         '--summary-output',
         summaryPath,
         '--candidate-output',
-        join(workdir, 'candidate.json')
+        join(workdir, 'candidate.json'),
+        '--history-output',
+        join(workdir, 'history.jsonl')
       ]),
       standardSeeds: [19],
       holdoutSeeds: [83]
@@ -161,7 +194,9 @@ describe('policy-gradient promotion loop', () => {
         '--summary-output',
         summaryPath,
         '--candidate-output',
-        join(workdir, 'candidate.json')
+        join(workdir, 'candidate.json'),
+        '--history-output',
+        join(workdir, 'history.jsonl')
       ]),
       standardSeeds: [19],
       holdoutSeeds: [83]
@@ -293,7 +328,14 @@ describe('policy-gradient promotion loop', () => {
     writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
 
     const result = runPromotionLoop({
-      ...parsePromotionLoopArgs(['--best', bestPath, '--candidate-output', candidatePath]),
+      ...parsePromotionLoopArgs([
+        '--best',
+        bestPath,
+        '--candidate-output',
+        candidatePath,
+        '--history-output',
+        join(workdir, 'history.jsonl')
+      ]),
       standardSeeds: [19],
       holdoutSeeds: [83],
       maxWinProxyRegression: 0.05

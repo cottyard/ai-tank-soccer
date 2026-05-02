@@ -128,7 +128,7 @@ npx tsx scripts/train-policy-gradient.ts `
   --temperature 1.1 `
   --discount 0.996 `
   --start-state-mode mixed `
-  --advantage-baseline learned `
+  --advantage-baseline start-team-time `
   --action-mode runtime `
   --opponent-mode self
 ```
@@ -167,6 +167,8 @@ npx tsx scripts/promote-policy-gradient.ts
 
 This trains a candidate from `public/models/neural-best.json`, samples native PPO opponents from a weighted league, uses the learned value baseline for sparse-return variance reduction, cycles mixed starts across open, outcome-curriculum, own-goal defense, corner fights, and loose-ball contests, runs the standard runtime gate and then the holdout runtime gate, writes `training-runs/neural-promotion-summary-s2026050208.json`, appends a compact entry to `training-runs/neural-promotion-history.jsonl`, and replaces `public/models/neural-best.json` only if both gates pass without meaningful goals or win-proxy regression. Use `--no-promote` for a dry run.
 
+Latest result: the 2026-05-02 default `learned` baseline + weighted `league` opponent promotion attempt was rejected at the standard gate. Current accepted model: goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270`; candidate: goals `9-1`, `avgScore=265.482`, `avgWin=0.700`, `avgBp=0.275`. De-prioritize this exact recipe until it is modified; keep learned baselines and league sampling available as diagnostics or targeted variants.
+
 League opponents can include the current accepted model, extra snapshots, and a low-weight traditional stabilizer:
 
 ```powershell
@@ -180,7 +182,8 @@ When internet research is needed from this environment, use the local HTTP proxy
 
 ## Next Work Plan
 
-1. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
+1. Try the conservative accepted-model recipe first: native PPO, mixed starts, runtime actions, `start-team-time` baseline, and self-play opponent. Use the automated promotion loop with explicit overrides so any successful candidate still has to pass both gates.
+2. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 
 Avoid spending mainline time on output-bias hill climbing, stamina-threshold tuning, or local black-box weight probes. They overfit quickly and should remain diagnostics only.
 
