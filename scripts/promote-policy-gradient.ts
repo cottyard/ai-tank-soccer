@@ -262,7 +262,11 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     stringArg(argv, '--league-traditional-weight') ?? '0.15'
   ];
   const nativeBin = stringArg(argv, '--native-bin');
+  const openStartRatio = stringArg(argv, '--open-start-ratio');
 
+  if (openStartRatio !== undefined) {
+    trainingArgs.push('--open-start-ratio', openStartRatio);
+  }
   for (const path of stringArgs(argv, '--league-opponent-weights')) {
     trainingArgs.push('--league-opponent-weights', path);
   }
@@ -445,6 +449,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     advantageBaseline: result.training.advantageBaseline,
     opponentMode: result.training.opponentMode,
     startStateMode: result.training.startStateMode,
+    openStartRatio: result.training.openStartRatio,
     actionMode: result.training.actionMode,
     matches: result.training.matches,
     frames: result.training.frames,
@@ -480,6 +485,7 @@ function trainingFromCandidateMetadata(
     learningRate: finiteMetadataNumber(metadata, 'learningRate', fallback.learningRate),
     ppoClip: finiteMetadataNumber(metadata, 'ppoClip', fallback.ppoClip),
     temperature: finiteMetadataNumber(metadata, 'temperature', fallback.temperature),
+    openStartRatio: optionalFiniteMetadataNumber(metadata, 'openStartRatio', fallback.openStartRatio),
     discount: finiteMetadataNumber(metadata, 'discount', fallback.discount),
     startStateMode: startStateModeMetadata(metadata, fallback.startStateMode),
     advantageBaseline: advantageBaselineMetadata(metadata, fallback.advantageBaseline),
@@ -502,12 +508,26 @@ function finiteMetadataNumber(
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function optionalFiniteMetadataNumber(
+  metadata: Record<string, unknown>,
+  field: string,
+  fallback: number | undefined
+): number | undefined {
+  const value = metadata[field];
+  return typeof value === 'number' && Number.isFinite(value) ? clamp01(value) : fallback;
+}
+
 function startStateModeMetadata(
   metadata: Record<string, unknown>,
   fallback: PolicyGradientCliOptions['startStateMode']
 ): PolicyGradientCliOptions['startStateMode'] {
   const value = metadata.startStateMode;
-  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+  return value === 'open' ||
+    value === 'outcome-curriculum' ||
+    value === 'own-goal-defense' ||
+    value === 'corner-fight' ||
+    value === 'loose-ball-contest' ||
+    value === 'mixed'
     ? value
     : fallback;
 }
@@ -607,6 +627,10 @@ function numberArg(argv: readonly string[], name: string, fallback: number): num
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clamp01(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 
 function integerArg(argv: readonly string[], name: string, fallback: number): number {

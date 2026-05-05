@@ -191,8 +191,10 @@ describe('native policy trainer', () => {
         '0.992',
         '--start-state-mode',
         'mixed',
-      '--advantage-baseline',
-      'learned',
+        '--open-start-ratio',
+        '0.25',
+        '--advantage-baseline',
+        'learned',
         '--action-mode',
         'runtime',
         '--opponent-mode',
@@ -227,6 +229,7 @@ describe('native policy trainer', () => {
       metadata?: {
         trainer?: string;
         startStateMode?: string;
+        openStartRatio?: number;
         advantageBaseline?: string;
         actionMode?: string;
         opponentMode?: string;
@@ -234,24 +237,28 @@ describe('native policy trainer', () => {
     };
     expect(nativeOutput.metadata?.trainer).toBe('rust-policy-gradient');
     expect(nativeOutput.metadata?.startStateMode).toBe('mixed');
+    expect(nativeOutput.metadata?.openStartRatio).toBe(0.25);
     expect(nativeOutput.metadata?.advantageBaseline).toBe('learned');
     expect(nativeOutput.metadata?.actionMode).toBe('runtime');
     expect(nativeOutput.metadata?.opponentMode).toBe('traditional');
 
     const nativeMetrics = JSON.parse(readFileSync(firstMetrics, 'utf8')) as {
       advantageBaseline?: string;
+      openStartRatio?: number;
       actionMode?: string;
       opponentMode?: string;
       startFamilies?: Record<string, number>;
     };
     expect(nativeMetrics.advantageBaseline).toBe('learned');
+    expect(nativeMetrics.openStartRatio).toBe(0.25);
     expect(nativeMetrics.actionMode).toBe('runtime');
     expect(nativeMetrics.opponentMode).toBe('traditional');
     expect(nativeMetrics.startFamilies).toMatchObject({
-      open: 1,
+      open: 2,
       outcomeCurriculum: 1,
-      ownGoalDefense: 1,
-      cornerFight: 1
+      ownGoalDefense: 0,
+      cornerFight: 1,
+      looseBallContest: 0
     });
   });
 

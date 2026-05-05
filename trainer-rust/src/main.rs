@@ -141,6 +141,7 @@ struct Options {
     goal_reward: f64,
     win_reward: f64,
     start_state_mode: StartStateMode,
+    open_start_ratio: Option<f64>,
     advantage_baseline: AdvantageBaseline,
     action_mode: ActionMode,
     opponent_mode: OpponentMode,
@@ -236,6 +237,7 @@ struct TrainingResult {
     blue_goals: i32,
     final_state: GameState,
     advantage_baseline: AdvantageBaseline,
+    open_start_ratio: Option<f64>,
     action_mode: ActionMode,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
@@ -334,6 +336,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         goal_reward: 1.0,
         win_reward: 1.4,
         start_state_mode: StartStateMode::OutcomeCurriculum,
+        open_start_ratio: None,
         advantage_baseline: AdvantageBaseline::Global,
         action_mode: ActionMode::Raw,
         opponent_mode: OpponentMode::SelfPlay,
@@ -391,6 +394,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                     _ => return Err(format!("Unknown start-state mode: {value}").into()),
                 }
             }
+            "--open-start-ratio" => options.open_start_ratio = Some(clamp01(value.parse::<f64>()?)),
             "--advantage-baseline" => {
                 options.advantage_baseline = match value.as_str() {
                     "global" => AdvantageBaseline::Global,
@@ -540,6 +544,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         blue_goals: collection.blue_goals,
         final_state: collection.final_state,
         advantage_baseline: options.advantage_baseline,
+        open_start_ratio: options.open_start_ratio,
         action_mode: options.action_mode,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
@@ -574,7 +579,11 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     let mut final_state = initial_state();
 
     for match_index in 0..options.matches {
-        let start_state_mode = resolve_start_state_mode(options.start_state_mode, match_index);
+        let start_state_mode = resolve_start_state_mode(
+            options.start_state_mode,
+            match_index,
+            options.open_start_ratio,
+        );
         increment_start_family(&mut start_families, start_state_mode);
         let mut state = seeded_initial_state(&mut random, match_index, start_state_mode);
         let train_team = if match_index % 2 == 0 {
@@ -1945,7 +1954,11 @@ fn seeded_initial_state(
     state
 }
 
-fn resolve_start_state_mode(mode: StartStateMode, match_index: usize) -> ActualStartStateMode {
+fn resolve_start_state_mode(
+    mode: StartStateMode,
+    match_index: usize,
+    open_start_ratio: Option<f64>,
+) -> ActualStartStateMode {
     match mode {
         StartStateMode::Open => ActualStartStateMode::Open,
         StartStateMode::OutcomeCurriculum => ActualStartStateMode::OutcomeCurriculum,
@@ -1953,6 +1966,9 @@ fn resolve_start_state_mode(mode: StartStateMode, match_index: usize) -> ActualS
         StartStateMode::CornerFight => ActualStartStateMode::CornerFight,
         StartStateMode::LooseBallContest => ActualStartStateMode::LooseBallContest,
         StartStateMode::Mixed => {
+            if let Some(ratio) = open_start_ratio {
+                return resolve_weighted_mixed_start_state_mode(match_index, ratio);
+            }
             match match_index % 5 {
                 0 => ActualStartStateMode::Open,
                 1 => ActualStartStateMode::OutcomeCurriculum,
@@ -1961,6 +1977,25 @@ fn resolve_start_state_mode(mode: StartStateMode, match_index: usize) -> ActualS
                 _ => ActualStartStateMode::LooseBallContest,
             }
         }
+    }
+}
+
+fn resolve_weighted_mixed_start_state_mode(match_index: usize, open_start_ratio: f64) -> ActualStartStateMode {
+    let cycle_slots = 20_usize;
+    let open_slots = (clamp01(open_start_ratio) * cycle_slots as f64).round() as usize;
+    let slot = (match_index * 7) % cycle_slots;
+    if slot < open_slots {
+        return ActualStartStateMode::Open;
+    }
+    let remaining_slots = cycle_slots.saturating_sub(open_slots);
+    if remaining_slots == 0 {
+        return ActualStartStateMode::Open;
+    }
+    match ((slot - open_slots) * 4 / remaining_slots).min(3) {
+        0 => ActualStartStateMode::OutcomeCurriculum,
+        1 => ActualStartStateMode::OwnGoalDefense,
+        2 => ActualStartStateMode::CornerFight,
+        _ => ActualStartStateMode::LooseBallContest,
     }
 }
 
@@ -3213,6 +3248,9 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
                 StartStateMode::Mixed => "mixed",
             }
         ));
+        if let Some(ratio) = options.open_start_ratio {
+            output.push_str(&format!(",\n    \"openStartRatio\": {}", ratio));
+        }
         output.push_str(&format!(
             ",\n    \"advantageBaseline\": \"{}\"",
             match options.advantage_baseline {
@@ -3266,6 +3304,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"redGoals\": {},\n",
             "  \"blueGoals\": {},\n",
             "  \"advantageBaseline\": \"{}\",\n",
+            "  \"openStartRatio\": {},\n",
             "  \"actionMode\": \"{}\",\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
@@ -3294,6 +3333,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             AdvantageBaseline::StartTeamTime => "start-team-time",
             AdvantageBaseline::Learned => "learned",
         },
+        optional_number_json(result.open_start_ratio),
         match result.action_mode {
             ActionMode::Raw => "raw",
             ActionMode::Runtime => "runtime",
@@ -3315,6 +3355,12 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.final_state.ball.position.x,
         result.final_state.ball.position.y
     )
+}
+
+fn optional_number_json(value: Option<f64>) -> String {
+    value
+        .map(|number| format!("{number:.17}"))
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn layer0_offset() -> usize {

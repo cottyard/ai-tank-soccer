@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { loadWeightsPayload, serializeWeightsPayload } from './coach-neural';
 import {
   trainPolicyGradientSelfPlay,
@@ -33,6 +33,7 @@ export type PolicyGradientCliOptions = {
   temperature: number;
   discount: number;
   startStateMode: PolicyGradientStartStateMode;
+  openStartRatio?: number;
   advantageBaseline: PolicyGradientAdvantageBaseline;
   actionMode: 'raw' | 'runtime';
   opponentMode: 'self' | 'traditional' | 'league';
@@ -54,6 +55,7 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   temperature: 1.08,
   discount: 0.992,
   startStateMode: 'outcome-curriculum',
+  openStartRatio: undefined,
   advantageBaseline: 'global',
   actionMode: 'raw',
   opponentMode: 'self',
@@ -78,6 +80,7 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     temperature: Math.max(0.05, numberArg(argv, '--temperature', DEFAULT_OPTIONS.temperature)),
     discount: clamp01(numberArg(argv, '--discount', DEFAULT_OPTIONS.discount)),
     startStateMode: startStateModeArg(argv, '--start-state-mode', DEFAULT_OPTIONS.startStateMode),
+    openStartRatio: optionalClamp01Arg(argv, '--open-start-ratio'),
     advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
     actionMode: actionModeArg(argv, '--action-mode', DEFAULT_OPTIONS.actionMode),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
@@ -112,10 +115,12 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
     discount: options.discount,
     advantageBaseline: options.advantageBaseline,
     startStateMode: options.startStateMode,
+    openStartRatio: options.openStartRatio,
     seed: options.seed
   });
 
   if (options.output) {
+    ensureParentDirectory(options.output);
     writeFileSync(options.output, serializeWeightsPayload(result.weights, {
       cycle: 0,
       bestCycle: 0,
@@ -128,6 +133,7 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
   }
 
   if (options.metricsOutput) {
+    ensureParentDirectory(options.metricsOutput);
     writeFileSync(options.metricsOutput, `${JSON.stringify({
       samples: result.samples,
       trainedSamples: result.trainedSamples,
@@ -188,8 +194,18 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     String(options.leagueTraditionalWeight)
   ];
 
+  if (options.openStartRatio !== undefined) {
+    args.push('--open-start-ratio', String(options.openStartRatio));
+  }
+
   if (!options.input) {
     writeFileSync(weightsPath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
+  }
+  if (options.output) {
+    ensureParentDirectory(options.output);
+  }
+  if (options.metricsOutput) {
+    ensureParentDirectory(options.metricsOutput);
   }
 
   for (const path of options.leagueOpponentWeights) {
@@ -337,9 +353,21 @@ function startStateModeArg(
   fallback: PolicyGradientStartStateMode
 ): PolicyGradientStartStateMode {
   const value = valueAfter(argv, name);
-  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+  return value === 'open' ||
+    value === 'outcome-curriculum' ||
+    value === 'own-goal-defense' ||
+    value === 'corner-fight' ||
+    value === 'loose-ball-contest' ||
+    value === 'mixed'
     ? value
     : fallback;
+}
+
+function ensureParentDirectory(path: string): void {
+  const parent = dirname(path);
+  if (parent && parent !== '.' && !existsSync(parent)) {
+    mkdirSync(parent, { recursive: true });
+  }
 }
 
 function advantageBaselineArg(
@@ -377,6 +405,15 @@ function opponentModeArg(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function optionalClamp01Arg(argv: readonly string[], name: string): number | undefined {
+  const value = valueAfter(argv, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp01(parsed) : undefined;
 }
 
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('/train-policy-gradient.ts') ||

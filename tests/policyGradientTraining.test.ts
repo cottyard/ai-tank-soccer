@@ -176,6 +176,25 @@ describe('policy-gradient self-play training', () => {
     );
   });
 
+  it('can weight the open slice inside mixed starts for curriculum-ratio searches', () => {
+    const weights = defaultNeuralWeights();
+    const result = collectPolicyGradientSelfPlay({
+      weights,
+      matches: 20,
+      frames: 6,
+      seed: 31,
+      startStateMode: 'mixed',
+      openStartRatio: 0.5
+    });
+    const familyCounts = countStartFamilies(result.decisions);
+
+    expect(familyCounts.open).toBe(20);
+    expect(familyCounts.outcomeCurriculum).toBe(6);
+    expect(familyCounts.ownGoalDefense).toBe(4);
+    expect(familyCounts.cornerFight).toBe(6);
+    expect(familyCounts.looseBallContest).toBe(4);
+  });
+
   it('updates network weights from sparse self-play returns', () => {
     const weights = defaultNeuralWeights();
     const trained = trainPolicyGradientSelfPlay({
@@ -215,4 +234,20 @@ function createImmediateRedGoalState(): GameState {
 function advantageVariance(decisions: readonly { advantage: number }[]): number {
   const mean = decisions.reduce((sum, decision) => sum + decision.advantage, 0) / decisions.length;
   return decisions.reduce((sum, decision) => sum + (decision.advantage - mean) ** 2, 0) / decisions.length;
+}
+
+function countStartFamilies(decisions: readonly { startStateMode: string }[]): {
+  open: number;
+  outcomeCurriculum: number;
+  ownGoalDefense: number;
+  cornerFight: number;
+  looseBallContest: number;
+} {
+  return {
+    open: decisions.filter((decision) => decision.startStateMode === 'open').length,
+    outcomeCurriculum: decisions.filter((decision) => decision.startStateMode === 'outcome-curriculum').length,
+    ownGoalDefense: decisions.filter((decision) => decision.startStateMode === 'own-goal-defense').length,
+    cornerFight: decisions.filter((decision) => decision.startStateMode === 'corner-fight').length,
+    looseBallContest: decisions.filter((decision) => decision.startStateMode === 'loose-ball-contest').length
+  };
 }

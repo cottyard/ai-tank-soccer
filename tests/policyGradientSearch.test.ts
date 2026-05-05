@@ -47,6 +47,8 @@ describe('policy-gradient promotion search', () => {
       '1.0,1.1',
       '--start-state-modes',
       'mixed,open',
+      '--open-start-ratios',
+      '0.25,0.5',
       '--advantage-baselines',
       'start-team-time,learned',
       '--opponent-modes',
@@ -77,11 +79,12 @@ describe('policy-gradient promotion search', () => {
         ppoClips: [0.1],
         temperatures: [1, 1.1],
         startStateModes: ['mixed', 'open'],
+        openStartRatios: [0.25, 0.5],
         advantageBaselines: ['start-team-time', 'learned'],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(128);
+    expect(options.variants).toHaveLength(192);
   });
 
   it('trains each variant, ranks promotion-safe candidates by holdout-gate delta, and writes summary history without promoting', () => {
@@ -316,6 +319,113 @@ describe('policy-gradient promotion search', () => {
       expect.stringContaining('-startopen-baselinelearned-oppself.json'),
       expect.stringContaining('-startopen-baselinelearned-oppleague.json')
     ]);
+  });
+
+  it('searches mixed open-start ratios without applying them to non-mixed starts', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-open-ratio-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      startStateMode: string;
+      openStartRatio?: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '41',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--start-state-modes',
+        'mixed,open',
+        '--open-start-ratios',
+        '0.25,0.5'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          startStateMode: training.startStateMode,
+          openStartRatio: training.openStartRatio,
+          output: training.output
+        });
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(12), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(12),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(3);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ startStateMode: 'mixed', openStartRatio: 0.25 }),
+      expect.objectContaining({ startStateMode: 'mixed', openStartRatio: 0.5 }),
+      expect.objectContaining({ startStateMode: 'open', openStartRatio: undefined })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-startmixed-open0p25-baselinestart-team-time-oppself.json'),
+      expect.stringContaining('-startmixed-open0p5-baselinestart-team-time-oppself.json'),
+      expect.stringContaining('-startopen-baselinestart-team-time-oppself.json')
+    ]);
+  });
+
+  it('accepts PowerShell-split comma lists for search dimensions', () => {
+    const options = parsePolicyGradientSearchArgs([
+      '--seed',
+      '43',
+      '--training-seeds',
+      '101',
+      '103',
+      '--learning-rates',
+      '0.001',
+      '--epochs-list',
+      '1',
+      '--ppo-clips',
+      '0.12',
+      '--temperatures',
+      '1.0',
+      '--start-state-modes',
+      'mixed',
+      'open',
+      '--open-start-ratios',
+      '0.2',
+      '0.35',
+      '0.5',
+      '--advantage-baselines',
+      'start-team-time',
+      '--opponent-modes',
+      'self'
+    ]);
+
+    expect(options.grid.trainingSeeds).toEqual([101, 103]);
+    expect(options.grid.startStateModes).toEqual(['mixed', 'open']);
+    expect(options.grid.openStartRatios).toEqual([0.2, 0.35, 0.5]);
+    expect(options.variants).toHaveLength(8);
   });
 
   it('can search explicit training seeds without changing output seed bookkeeping', () => {

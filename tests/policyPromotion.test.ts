@@ -325,8 +325,9 @@ describe('policy-gradient promotion loop', () => {
         learningRate: 0.0008,
         ppoClip: 0.16,
         temperature: 1,
+        openStartRatio: 0.35,
         discount: 0.995,
-        startStateMode: 'mixed',
+        startStateMode: 'corner-fight',
         advantageBaseline: 'start-team-time',
         actionMode: 'runtime',
         opponentMode: 'self',
@@ -364,7 +365,9 @@ describe('policy-gradient promotion loop', () => {
       learningRate: 0.0008,
       ppoClip: 0.16,
       temperature: 1,
+      openStartRatio: 0.35,
       discount: 0.995,
+      startStateMode: 'corner-fight',
       advantageBaseline: 'start-team-time',
       opponentMode: 'self'
     });

@@ -59,6 +59,7 @@ Current sparse-reward PPO supports:
 - weighted league opponent sampling from current, recent, historical, and traditional opponents;
 - PPO clipping through old action probability;
 - advantage normalization with `global`, `start-team-time`, or `learned` baselines;
+- searchable open-start weighting inside `mixed` starts via `--open-start-ratio` / `--open-start-ratios`;
 - trainable-only sample filtering when playing against frozen or traditional opponents.
 
 Rewards should stay tied to outcomes: future goals for/against and final win/loss/draw. Start-state curriculum is acceptable only when it is evaluated through both standard and holdout gates; shaped tactical rewards should be separate, documented, and used sparingly.
@@ -228,11 +229,12 @@ npx tsx scripts/search-policy-gradient.ts `
   --ppo-clips 0.08,0.12,0.16 `
   --temperatures 1.0,1.1 `
   --start-state-modes mixed,open `
+  --open-start-ratios 0.2,0.35,0.5 `
   --advantage-baselines start-team-time,learned `
   --opponent-modes self,league
 ```
 
-This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. The search runner now supports explicit `--training-seeds`, searches `start-state-mode` / `advantage-baseline` / `opponent-mode` categorical dimensions, evaluates both standard and holdout gates, and ranks promotion-safe standard candidates before holdout-only gains. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
+This writes ranked short-run candidates under `training-runs/policy-gradient-search-s<seed>/`, writes a JSON summary, appends `training-runs/policy-gradient-search-history.jsonl`, and does not promote weights. The search runner now supports explicit `--training-seeds`, searches `start-state-mode` / `open-start-ratio` / `advantage-baseline` / `opponent-mode` dimensions, evaluates both standard and holdout gates, and ranks promotion-safe standard candidates before holdout-only gains. `--open-start-ratios` applies only to `mixed` starts; non-mixed `open` variants are not duplicated by ratio. Use the best survivor as input to the full promotion loop before replacing `public/models/neural-best.json`.
 
 Evaluate a search survivor through the full promotion gates without retraining it:
 
@@ -248,13 +250,17 @@ The `search-policy-gradient` runner now evaluates both standard and holdout gate
 
 Broadened full-gate search on `2026050220` (`matches=120`, `frames=120`) over `start-state-mode={mixed,open}`, `advantage-baseline={start-team-time,learned}`, and `opponent-mode={self,league}` found a useful but non-promotable trade-off. `open + start-team-time + self` with `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.1` improved holdout to goals `13-1`, holdout delta `+19.319`, mostly by turning seed `109` from `1-0` to `3-0`, but regressed standard to goals `9-1`, standard delta `-55.322`. With promotion-safe ranking added, `2026050221` and `2026050226` showed the same split: temperature `1.0` can preserve the holdout `+19.319` signal with standard goals still `11-1` but standard score slightly negative (`-1.140` best observed), while temperature `1.05` restores standard delta `+0.447` and loses the holdout gain. Multi-seed search `2026050222..2026050225` reproduced the holdout-positive pattern for `open + start-team-time + self`, but no seed met the standard score gate. Treat open-start PPO as a promising diagnostic direction, not a promotion candidate yet.
 
-When using `--candidate-input`, the promotion loop reads the candidate weight metadata for seed, baseline, opponent mode, epochs, batch size, learning rate, clip, temperature, discount, start mode, and action mode. This keeps promotion summaries and history tied to the actual search candidate instead of the promotion loop's default training recipe.
+On 2026-05-05, the trainer/search plumbing was extended so `mixed` starts can search an `openStartRatio` without switching all training to pure `open`. The TypeScript collector and Rust sampler both keep the original five-family `mixed` cycle when no ratio is provided; when a ratio is provided, only the open share changes and the remaining slots spread over outcome, own-goal-defense, corner, and loose-ball starts. On 2026-05-06, Rust stable GNU was installed locally through rustup using the `rsproxy.cn` mirror, `trainer-rust/target/release/soccer-policy-trainer.exe` was built, and native parity tests passed. The search CLI now also accepts PowerShell-split comma lists, so `--start-state-modes mixed,open` and an accidentally split `mixed open` both parse into the intended grid.
+
+The first full-gate ratio diagnostic on seed `2026050602` (`matches=120`, `frames=120`, `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.0`, `start-team-time`, `self`) compared `mixed` open ratios `0.2/0.35/0.5` against pure `open`. Best row was pure `open`: standard goals `12-1`, standard delta `+26.701`, holdout goals `11-0`, holdout delta `0.000`; full `--candidate-input --no-promote` check rejected it because holdout score did not improve. Ratio rows did not recover the seed `109` holdout gain: `0.35` and `0.5` matched the known safe standard `+0.447` / holdout `0.000` pattern, while `0.2` regressed standard by `-25.808`. Do not promote any `2026050602` candidate.
+
+When using `--candidate-input`, the promotion loop reads the candidate weight metadata for seed, baseline, opponent mode, epochs, batch size, learning rate, clip, temperature, open-start ratio, discount, start mode, and action mode. This keeps promotion summaries and history tied to the actual search candidate instead of the promotion loop's default training recipe.
 
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Investigate the open-start trade-off instead of more blind grid search: compare why standard seed `43` loses about `6.15` score while holdout seed `109` gains two goals, then look for a mixed/open curriculum ratio or training schedule that keeps the seed `109` gain without standard score regression.
+1. Continue the open-start trade-off investigation with a small follow-up only if it tests a new hypothesis, not the same ratio surface. A reasonable next check is `temperature=1.1` for `mixed --open-start-ratios 0.35,0.5` versus pure `open`, or a two-stage schedule if implemented. The target remains preserving the holdout seed `109` finishing gain without the standard seed `43` score regression.
 2. Keep learned baselines and weighted league sampling available, but treat them as variants to search rather than defaults.
 3. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 

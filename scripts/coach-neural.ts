@@ -1032,7 +1032,12 @@ function startStateModeArg(
   fallback: PolicyGradientStartStateMode
 ): PolicyGradientStartStateMode {
   const value = valueAfter(argv, name);
-  return value === 'open' || value === 'outcome-curriculum' || value === 'mixed'
+  return value === 'open' ||
+    value === 'outcome-curriculum' ||
+    value === 'own-goal-defense' ||
+    value === 'corner-fight' ||
+    value === 'loose-ball-contest' ||
+    value === 'mixed'
     ? value
     : fallback;
 }

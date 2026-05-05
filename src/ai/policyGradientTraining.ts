@@ -40,6 +40,7 @@ export type PolicyGradientCollectionOptions = {
   normalizeAdvantages?: boolean;
   advantageBaseline?: PolicyGradientAdvantageBaseline;
   startStateMode?: PolicyGradientStartStateMode;
+  openStartRatio?: number;
   initialStateFactory?: (match: number, random: () => number) => GameState;
 };
 
@@ -107,7 +108,11 @@ export function collectPolicyGradientSelfPlay(
   let finalState = createInitialState();
 
   for (let match = 0; match < matches; match += 1) {
-    const startStateMode = resolveStartStateMode(options.startStateMode ?? 'open', match);
+    const startStateMode = resolveStartStateMode(
+      options.startStateMode ?? 'open',
+      match,
+      options.openStartRatio
+    );
     const state = options.initialStateFactory
       ? options.initialStateFactory(match, random)
       : createSeededInitialState(random, match, startStateMode);
@@ -487,8 +492,15 @@ function createSeededInitialState(
   return state;
 }
 
-function resolveStartStateMode(mode: PolicyGradientStartStateMode, match: number): ActualStartStateMode {
+function resolveStartStateMode(
+  mode: PolicyGradientStartStateMode,
+  match: number,
+  openStartRatio?: number
+): ActualStartStateMode {
   if (mode === 'mixed') {
+    if (openStartRatio !== undefined) {
+      return resolveWeightedMixedStartStateMode(match, openStartRatio);
+    }
     const modes: ActualStartStateMode[] = [
       'open',
       'outcome-curriculum',
@@ -499,6 +511,28 @@ function resolveStartStateMode(mode: PolicyGradientStartStateMode, match: number
     return modes[match % modes.length];
   }
   return mode;
+}
+
+function resolveWeightedMixedStartStateMode(match: number, openStartRatio: number): ActualStartStateMode {
+  const modes: ActualStartStateMode[] = [
+    'open',
+    'outcome-curriculum',
+    'own-goal-defense',
+    'corner-fight',
+    'loose-ball-contest'
+  ];
+  const cycleSlots = 20;
+  const openSlots = Math.round(clamp01(openStartRatio) * cycleSlots);
+  const slot = (match * 7) % cycleSlots;
+  if (slot < openSlots) {
+    return 'open';
+  }
+  const remainingSlots = cycleSlots - openSlots;
+  if (remainingSlots <= 0) {
+    return 'open';
+  }
+  const bucket = Math.min(3, Math.floor(((slot - openSlots) * 4) / remainingSlots));
+  return modes[bucket + 1];
 }
 
 function placeOutcomeCurriculumState(

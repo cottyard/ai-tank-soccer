@@ -28,6 +28,7 @@ export type PolicyGradientSearchVariant = {
   ppoClip: number;
   temperature: number;
   startStateMode: PolicyGradientCliOptions['startStateMode'];
+  openStartRatio?: number;
   advantageBaseline: PolicyGradientCliOptions['advantageBaseline'];
   opponentMode: PolicyGradientCliOptions['opponentMode'];
 };
@@ -82,6 +83,7 @@ export type PolicyGradientSearchOptions = {
     ppoClips: number[];
     temperatures: number[];
     startStateModes: PolicyGradientCliOptions['startStateMode'][];
+    openStartRatios: Array<number | undefined>;
     advantageBaselines: PolicyGradientCliOptions['advantageBaseline'][];
     opponentModes: PolicyGradientCliOptions['opponentMode'][];
   };
@@ -114,6 +116,7 @@ const DEFAULT_OPPONENT_MODES: PolicyGradientCliOptions['opponentMode'][] = ['sel
 export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGradientSearchOptions {
   const seed = integerArg(argv, '--seed', DEFAULT_SEED);
   const startStateMode = startStateModeArg(argv, '--start-state-mode', DEFAULT_START_STATE_MODES[0]);
+  const openStartRatio = optionalClamp01Arg(argv, '--open-start-ratio');
   const advantageBaseline = advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_ADVANTAGE_BASELINES[0]);
   const opponentMode = opponentModeArg(argv, '--opponent-mode', DEFAULT_OPPONENT_MODES[0]);
   const grid = {
@@ -123,6 +126,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     ppoClips: numberListArg(argv, '--ppo-clips', [0.08, 0.12, 0.16]),
     temperatures: numberListArg(argv, '--temperatures', [1, 1.1]),
     startStateModes: startStateModeListArg(argv, '--start-state-modes', [startStateMode]),
+    openStartRatios: optionalNumberListArg(argv, '--open-start-ratios', openStartRatio),
     advantageBaselines: advantageBaselineListArg(argv, '--advantage-baselines', [advantageBaseline]),
     opponentModes: opponentModeListArg(argv, '--opponent-modes', [opponentMode])
   };
@@ -187,9 +191,10 @@ export function runPolicyGradientSearch(
       `clip${slugNumber(variant.ppoClip)}`,
       `t${slugNumber(variant.temperature)}`,
       `start${slugText(variant.startStateMode)}`,
+      variant.openStartRatio === undefined ? undefined : `open${slugNumber(variant.openStartRatio)}`,
       `baseline${slugText(variant.advantageBaseline)}`,
       `opp${slugText(variant.opponentMode)}`
-    ].join('-');
+    ].filter((part): part is string => part !== undefined).join('-');
     const candidatePath = join(options.outputDir, `${variantId}.json`);
     const candidateMetricsPath = join(options.outputDir, `${variantId}-metrics.json`);
     const training: PolicyGradientCliOptions = {
@@ -203,6 +208,7 @@ export function runPolicyGradientSearch(
       ppoClip: variant.ppoClip,
       temperature: variant.temperature,
       startStateMode: variant.startStateMode,
+      openStartRatio: variant.openStartRatio,
       advantageBaseline: variant.advantageBaseline,
       opponentMode: variant.opponentMode
     };
@@ -473,6 +479,7 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestPpoClip: result.best.variant.ppoClip,
     bestTemperature: result.best.variant.temperature,
     bestStartStateMode: result.best.variant.startStateMode,
+    bestOpenStartRatio: result.best.variant.openStartRatio,
     bestAdvantageBaseline: result.best.variant.advantageBaseline,
     bestOpponentMode: result.best.variant.opponentMode
   })}\n`, 'utf8');
@@ -485,6 +492,7 @@ function expandVariants(grid: {
   ppoClips: readonly number[];
   temperatures: readonly number[];
   startStateModes: readonly PolicyGradientCliOptions['startStateMode'][];
+  openStartRatios: readonly (number | undefined)[];
   advantageBaselines: readonly PolicyGradientCliOptions['advantageBaseline'][];
   opponentModes: readonly PolicyGradientCliOptions['opponentMode'][];
 }): PolicyGradientSearchVariant[] {
@@ -495,18 +503,22 @@ function expandVariants(grid: {
         for (const ppoClip of grid.ppoClips) {
           for (const temperature of grid.temperatures) {
             for (const startStateMode of grid.startStateModes) {
-              for (const advantageBaseline of grid.advantageBaselines) {
-                for (const opponentMode of grid.opponentModes) {
-                  variants.push({
-                    trainingSeed,
-                    learningRate,
-                    epochs,
-                    ppoClip,
-                    temperature,
-                    startStateMode,
-                    advantageBaseline,
-                    opponentMode
-                  });
+              const openStartRatios = startStateMode === 'mixed' ? grid.openStartRatios : [undefined];
+              for (const openStartRatio of openStartRatios) {
+                for (const advantageBaseline of grid.advantageBaselines) {
+                  for (const opponentMode of grid.opponentModes) {
+                    variants.push({
+                      trainingSeed,
+                      learningRate,
+                      epochs,
+                      ppoClip,
+                      temperature,
+                      startStateMode,
+                      openStartRatio,
+                      advantageBaseline,
+                      opponentMode
+                    });
+                  }
                 }
               }
             }
@@ -540,7 +552,7 @@ function slugText(value: string): string {
 }
 
 function numberListArg(argv: readonly string[], name: string, fallback: readonly number[]): number[] {
-  const value = stringArg(argv, name);
+  const value = listArgValue(argv, name);
   if (!value) {
     return [...fallback];
   }
@@ -548,6 +560,23 @@ function numberListArg(argv: readonly string[], name: string, fallback: readonly
     .map((part) => Number(part.trim()))
     .filter((part) => Number.isFinite(part));
   return values.length > 0 ? values : [...fallback];
+}
+
+function optionalNumberListArg(
+  argv: readonly string[],
+  name: string,
+  singleFallback?: number
+): Array<number | undefined> {
+  const value = listArgValue(argv, name);
+  if (!value) {
+    return singleFallback === undefined ? [undefined] : [singleFallback];
+  }
+  const values = value.split(',')
+    .map((part) => Number(part.trim()))
+    .filter((part) => Number.isFinite(part))
+    .map(clamp01)
+    .filter((part, index, parts) => parts.indexOf(part) === index);
+  return values.length > 0 ? values : singleFallback === undefined ? [undefined] : [singleFallback];
 }
 
 function integerListArg(argv: readonly string[], name: string, fallback: readonly number[]): number[] {
@@ -610,7 +639,7 @@ function enumListArg<T extends string>(
   fallback: readonly T[],
   isValid: (value: string) => value is T
 ): T[] {
-  const value = stringArg(argv, name);
+  const value = listArgValue(argv, name);
   if (!value) {
     return [...fallback];
   }
@@ -643,7 +672,7 @@ function isOpponentMode(value: string): value is PolicyGradientCliOptions['oppon
 }
 
 function seedListArg(argv: readonly string[], name: string, fallback: readonly number[]): number[] {
-  const value = stringArg(argv, name);
+  const value = listArgValue(argv, name);
   if (!value) {
     return [...fallback];
   }
@@ -656,6 +685,22 @@ function seedListArg(argv: readonly string[], name: string, fallback: readonly n
 function stringArg(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   return index === -1 || index === argv.length - 1 ? undefined : argv[index + 1];
+}
+
+function listArgValue(argv: readonly string[], name: string): string | undefined {
+  const index = argv.indexOf(name);
+  if (index === -1 || index === argv.length - 1) {
+    return undefined;
+  }
+  const values: string[] = [];
+  for (let cursor = index + 1; cursor < argv.length; cursor += 1) {
+    const value = argv[cursor];
+    if (value.startsWith('--')) {
+      break;
+    }
+    values.push(value);
+  }
+  return values.length > 0 ? values.join(',') : undefined;
 }
 
 function stringArgs(argv: readonly string[], name: string): string[] {
@@ -675,6 +720,19 @@ function numberArg(argv: readonly string[], name: string, fallback: number): num
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function optionalClamp01Arg(argv: readonly string[], name: string): number | undefined {
+  const value = stringArg(argv, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp01(parsed) : undefined;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function integerArg(argv: readonly string[], name: string, fallback: number): number {
