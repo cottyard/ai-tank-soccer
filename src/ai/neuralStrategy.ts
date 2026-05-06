@@ -1,6 +1,6 @@
 import { FIELD, type GameState, type Tank, type Team } from '../game/model';
 import type { CommandMap, Strategy, TankCommand } from '../game/strategy';
-import { actionIndexToCommand } from './policyActions';
+import { actionIndexToCommand, commandToActionIndex } from './policyActions';
 import {
   evaluatePolicy,
   policyProbabilities
@@ -21,6 +21,29 @@ export type NeuralStrategyOptions = {
   weights?: NeuralWeights | (() => NeuralWeights);
   name?: string;
   tacticalRollout?: boolean;
+  onDecision?: (trace: NeuralDecisionTrace) => void;
+};
+
+export type NeuralDecisionTrace = {
+  frame: number;
+  team: Team;
+  tankId: string;
+  staminaRatio: number;
+  ballDistance: number;
+  ballSpeed: number;
+  finishingPressure: number;
+  ownGoalPressure: number;
+  sideWallPressure: number;
+  attackCornerPressure: number;
+  ownCornerPressure: number;
+  policyActionIndex?: number;
+  tacticalActionIndex?: number;
+  finalActionIndex: number;
+  tacticalRolloutUsed: boolean;
+  tacticalRolloutChanged: boolean;
+  staminaConserved: boolean;
+  criticalStaminaRegulated: boolean;
+  flatPolicy: boolean;
 };
 
 type PressureSignals = {
@@ -41,6 +64,7 @@ type LocalVector = {
 export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strategy {
   const providedWeights = options.weights;
   const tacticalRollout = options.tacticalRollout ?? true;
+  const onDecision = options.onDecision;
   const resolveWeights =
     typeof providedWeights === 'function'
       ? () => validateWeights(providedWeights())
@@ -59,18 +83,40 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
 
       const pressures = pressureSignals(state, team);
       if (shouldConserveStamina(state, team, tank, pressures)) {
+        onDecision?.(decisionTrace(state, team, tank, pressures, {
+          finalCommand: STOP_COMMAND,
+          tacticalRolloutUsed: false,
+          tacticalRolloutChanged: false,
+          staminaConserved: true,
+          criticalStaminaRegulated: false,
+          flatPolicy: false
+        }));
         return { [tank.id]: STOP_COMMAND };
       }
 
-      const command = policyOutputToCommand(
+      const decision = policyOutputToDecision(
           state,
           team,
           evaluateTankNetwork(state, team, tank, resolveWeights()),
           tacticalRollout && shouldUseTacticalRollout(state, team, tank, pressures)
         );
+      const command = decision.command;
+      const regulatedCommand = regulateCriticalStaminaCommand(state, team, tank, pressures, command);
+      const criticalStaminaRegulated = commandToActionIndex(regulatedCommand) !== commandToActionIndex(command);
+
+      onDecision?.(decisionTrace(state, team, tank, pressures, {
+        policyActionIndex: decision.policyActionIndex,
+        tacticalActionIndex: decision.tacticalActionIndex,
+        finalCommand: regulatedCommand,
+        tacticalRolloutUsed: decision.tacticalRolloutUsed,
+        tacticalRolloutChanged: decision.tacticalRolloutChanged,
+        staminaConserved: false,
+        criticalStaminaRegulated,
+        flatPolicy: decision.flatPolicy
+      }));
 
       return {
-        [tank.id]: regulateCriticalStaminaCommand(state, team, tank, pressures, command)
+        [tank.id]: regulatedCommand
       };
     }
   };
@@ -538,16 +584,28 @@ function localBearing(local: LocalVector): { forward: number; lateral: number } 
   };
 }
 
-function policyOutputToCommand(
+function policyOutputToDecision(
   state: Readonly<GameState>,
   team: Team,
   logits: readonly number[],
   useTacticalRollout: boolean
-): TankCommand {
+): {
+  command: TankCommand;
+  policyActionIndex?: number;
+  tacticalActionIndex?: number;
+  tacticalRolloutUsed: boolean;
+  tacticalRolloutChanged: boolean;
+  flatPolicy: boolean;
+} {
   const maxLogit = Math.max(...logits);
   const minLogit = Math.min(...logits);
   if (Math.abs(maxLogit - minLogit) < 1e-9) {
-    return STOP_COMMAND;
+    return {
+      command: STOP_COMMAND,
+      tacticalRolloutUsed: false,
+      tacticalRolloutChanged: false,
+      flatPolicy: true
+    };
   }
 
   const probabilities = policyProbabilities(logits);
@@ -556,7 +614,14 @@ function policyOutputToCommand(
     0
   );
   if (!useTacticalRollout) {
-    return actionIndexToCommand(policyActionIndex);
+    return {
+      command: actionIndexToCommand(policyActionIndex),
+      policyActionIndex,
+      tacticalActionIndex: policyActionIndex,
+      tacticalRolloutUsed: false,
+      tacticalRolloutChanged: false,
+      flatPolicy: false
+    };
   }
 
   const bestIndex = chooseTacticalAction({
@@ -565,7 +630,53 @@ function policyOutputToCommand(
     policyActionIndex
   }).actionIndex;
 
-  return actionIndexToCommand(bestIndex);
+  return {
+    command: actionIndexToCommand(bestIndex),
+    policyActionIndex,
+    tacticalActionIndex: bestIndex,
+    tacticalRolloutUsed: true,
+    tacticalRolloutChanged: bestIndex !== policyActionIndex,
+    flatPolicy: false
+  };
+}
+
+function decisionTrace(
+  state: Readonly<GameState>,
+  team: Team,
+  tank: Tank,
+  pressures: PressureSignals,
+  decision: {
+    policyActionIndex?: number;
+    tacticalActionIndex?: number;
+    finalCommand: TankCommand;
+    tacticalRolloutUsed: boolean;
+    tacticalRolloutChanged: boolean;
+    staminaConserved: boolean;
+    criticalStaminaRegulated: boolean;
+    flatPolicy: boolean;
+  }
+): NeuralDecisionTrace {
+  return {
+    frame: state.frame,
+    team,
+    tankId: tank.id,
+    staminaRatio: staminaRatio(tank),
+    ballDistance: ballDistanceToTank(state, tank),
+    ballSpeed: Math.hypot(state.ball.velocity.x, state.ball.velocity.y),
+    finishingPressure: pressures.finishing,
+    ownGoalPressure: pressures.ownGoal,
+    sideWallPressure: pressures.sideWall,
+    attackCornerPressure: pressures.attackCorner,
+    ownCornerPressure: pressures.ownCorner,
+    policyActionIndex: decision.policyActionIndex,
+    tacticalActionIndex: decision.tacticalActionIndex,
+    finalActionIndex: commandToActionIndex(decision.finalCommand),
+    tacticalRolloutUsed: decision.tacticalRolloutUsed,
+    tacticalRolloutChanged: decision.tacticalRolloutChanged,
+    staminaConserved: decision.staminaConserved,
+    criticalStaminaRegulated: decision.criticalStaminaRegulated,
+    flatPolicy: decision.flatPolicy
+  };
 }
 
 function validateWeights(weights: NeuralWeights): NeuralWeights {

@@ -88,7 +88,7 @@ Stop recommending:
 - Narrow clip/temperature sweeps around the current accepted recipe unless they are tied to a diagnosed gate seed failure.
 - Searches with short `gate-frames` that do not produce goals; they rank noise, not soccer strength.
 
-Current lesson: the accepted policy is near a local gate plateau. Useful future work should explain specific seed-level regressions before launching more grid searches. The immediate target is to preserve the open-start holdout `109` gain without the standard seed `43` score loss.
+Current lesson: the accepted policy is near a local gate plateau. Useful future work should explain specific seed-level regressions before launching more grid searches. The immediate target is to make training updates behavior-visible under the runtime wrapper, then preserve any open-start holdout `109` gain without standard score loss.
 
 ## Development Principles
 
@@ -254,15 +254,19 @@ On 2026-05-05, the trainer/search plumbing was extended so `mixed` starts can se
 
 The first full-gate ratio diagnostic on seed `2026050602` (`matches=120`, `frames=120`, `lr=0.001`, `epochs=1`, `ppoClip=0.12`, `temperature=1.0`, `start-team-time`, `self`) compared `mixed` open ratios `0.2/0.35/0.5` against pure `open`. Best row was pure `open`: standard goals `12-1`, standard delta `+26.701`, holdout goals `11-0`, holdout delta `0.000`; full `--candidate-input --no-promote` check rejected it because holdout score did not improve. Ratio rows did not recover the seed `109` holdout gain: `0.35` and `0.5` matched the known safe standard `+0.447` / holdout `0.000` pattern, while `0.2` regressed standard by `-25.808`. Do not promote any `2026050602` candidate.
 
+On 2026-05-06, runtime decision tracing was added through `scripts/trace-runtime-policy.ts`. It records policy argmax actions, tactical rollout rewrites, stamina conservation, critical-stamina regulation, and final action histograms without changing normal gate scoring. Tracing the rejected `2026050602` pure-open candidate explained why model improvement is hard: on standard seeds it gained one goal mostly through seed `19`, with only small final-action shifts (`+11` full-forward, `+7` forward-left, `-24` coast-right over 2000 decisions), while on holdout seeds the final action histogram was exactly unchanged across all 2000 runtime decisions. Policy argmax changed by only two holdout decisions (`-1` action 5, `+1` action 7), and the tactical/stamina wrapper erased even that. This means many PPO updates are too small or too misaligned to cross the runtime behavior threshold created by argmax action selection, tactical rollout overrides, and stamina guards. More training on the same objective can produce real weight deltas that are invisible in browser behavior.
+
 When using `--candidate-input`, the promotion loop reads the candidate weight metadata for seed, baseline, opponent mode, epochs, batch size, learning rate, clip, temperature, open-start ratio, discount, start mode, and action mode. This keeps promotion summaries and history tied to the actual search candidate instead of the promotion loop's default training recipe.
 
 When internet research is needed from this environment, use the local HTTP proxy `http://127.0.0.1:10808`.
 
 ## Next Work Plan
 
-1. Continue the open-start trade-off investigation with a small follow-up only if it tests a new hypothesis, not the same ratio surface. A reasonable next check is `temperature=1.1` for `mixed --open-start-ratios 0.35,0.5` versus pure `open`, or a two-stage schedule if implemented. The target remains preserving the holdout seed `109` finishing gain without the standard seed `43` score regression.
-2. Keep learned baselines and weighted league sampling available, but treat them as variants to search rather than defaults.
-3. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
+1. Stop spending mainline budget on ratio or temperature sweeps until a candidate shows behavior-visible holdout deltas under `trace-runtime-policy`. For any future search survivor, trace standard and holdout before a full promotion check; if final action histograms are unchanged on holdout, reject it as behavior-invisible.
+2. Add a training/evaluation bridge that optimizes for runtime-visible decisions, not just PPO weight movement. The most practical next implementation is a trace-guided diagnostic gate or auxiliary metric: count final-action changes and tactical override rates on standard/holdout seeds, then rank candidates that change holdout behavior without increasing standard stamina stops or goal regression.
+3. Investigate whether training should model the runtime wrapper directly: either include tactical rollout/stamina regulation in native sample execution metadata, or train only on states where the policy action survives the wrapper. This is a better hypothesis than more open-ratio search because the latest holdout failure was action-invisible.
+4. Keep learned baselines and weighted league sampling available, but treat them as variants to search only after the behavior-visibility problem is addressed.
+5. Keep runtime-action Rust parity covered by tests whenever `neuralStrategy`, stamina regulation, tactical rollout, or physics changes.
 
 Avoid spending mainline time on output-bias hill climbing, stamina-threshold tuning, or local black-box weight probes. They overfit quickly and should remain diagnostics only.
 

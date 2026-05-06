@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { evaluatePolicyGate, evaluateRuntimePolicy, selectAcceptedPolicy } from '../src/ai/policyGate';
+import { evaluatePolicyGate, evaluateRuntimePolicy, selectAcceptedPolicy, traceRuntimePolicy } from '../src/ai/policyGate';
+import { POLICY_ACTION_COUNT } from '../src/ai/policyActions';
+import { parseTraceRuntimePolicyArgs } from '../scripts/trace-runtime-policy';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 import type { EvaluationOptions, EvaluationResult } from '../src/ai/neuralTraining';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
@@ -73,4 +75,55 @@ describe('policy adoption gate', () => {
     expect(result.winProxy).toBeGreaterThanOrEqual(0);
     expect(result.winProxy).toBeLessThanOrEqual(1);
   });
+
+  it('can trace runtime decisions without changing gate scoring', () => {
+    const options = {
+      seeds: [5, 7],
+      matches: 2,
+      frames: 60
+    };
+    const traced = traceRuntimePolicy(defaultNeuralWeights(), options);
+    const seed5 = evaluateRuntimePolicy(defaultNeuralWeights(), {
+      seed: 5,
+      matches: 2,
+      frames: 60
+    });
+    const seed7 = evaluateRuntimePolicy(defaultNeuralWeights(), {
+      seed: 7,
+      matches: 2,
+      frames: 60
+    });
+
+    expect(traced.seeds).toHaveLength(2);
+    expect(traced.decisions).toBeGreaterThan(0);
+    expect(traced.policyActionCounts).toHaveLength(POLICY_ACTION_COUNT);
+    expect(traced.tacticalActionCounts).toHaveLength(POLICY_ACTION_COUNT);
+    expect(traced.finalActionCounts).toHaveLength(POLICY_ACTION_COUNT);
+    expect(sum(traced.finalActionCounts)).toBe(traced.decisions);
+    expect(traced.goalsFor).toBe(seed5.goalsFor + seed7.goalsFor);
+    expect(traced.goalsAgainst).toBe(seed5.goalsAgainst + seed7.goalsAgainst);
+    expect(traced.score).toBeCloseTo((seed5.score + seed7.score) / 2, 9);
+    expect(traced.averageStamina).toBeGreaterThanOrEqual(0);
+    expect(traced.averageStamina).toBeLessThanOrEqual(1);
+  });
+
+  it('parses split seed lists for runtime trace diagnostics', () => {
+    const options = parseTraceRuntimePolicyArgs([
+      '--seeds',
+      '83',
+      '97',
+      '109',
+      '127',
+      '149',
+      '--matches',
+      '4'
+    ]);
+
+    expect(options.seeds).toEqual([83, 97, 109, 127, 149]);
+    expect(options.matches).toBe(4);
+  });
 });
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
