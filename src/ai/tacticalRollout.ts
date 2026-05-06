@@ -9,6 +9,7 @@ export type TacticalActionChoice = {
   actionIndex: number;
   score: number;
   policyScore: number;
+  actionScores: number[];
 };
 
 export type TacticalActionOptions = {
@@ -31,6 +32,8 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
     actionIndex: policyActionIndex,
     rolloutFrames
   });
+  const actionScores = Array.from({ length: POLICY_ACTION_COUNT }, () => Number.NEGATIVE_INFINITY);
+  actionScores[policyActionIndex] = policyScore;
   let best = {
     actionIndex: policyActionIndex,
     score: policyScore
@@ -46,6 +49,7 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
       actionIndex,
       rolloutFrames
     });
+    actionScores[actionIndex] = score;
     if (score > best.score + 1e-9) {
       best = { actionIndex, score };
     }
@@ -59,7 +63,8 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
   return {
     actionIndex,
     score: actionIndex === best.actionIndex ? best.score : policyScore,
-    policyScore
+    policyScore,
+    actionScores
   };
 }
 

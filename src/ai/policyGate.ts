@@ -98,22 +98,53 @@ export type RuntimeDecisionTraceRun = {
 
 export type RuntimeDecisionTraceComparison = {
   comparedDecisions: number;
+  alignedComparedDecisions: number;
+  afterFinalActionDivergenceComparedDecisions: number;
   missingCurrentDecisions: number;
   missingCandidateDecisions: number;
   rawPolicyChanges: number;
+  alignedRawPolicyChanges: number;
+  afterFinalActionDivergenceRawPolicyChanges: number;
   tacticalActionChanges: number;
   finalActionChanges: number;
   lostPolicyChanges: number;
+  alignedLostPolicyChanges: number;
+  afterFinalActionDivergenceLostPolicyChanges: number;
   lostWithTacticalRollout: number;
   lostWithStaminaConserve: number;
   lostWithCriticalStamina: number;
   lostWithFlatPolicy: number;
+  firstFinalActionDivergences: RuntimeDecisionTraceDivergence[];
   seeds: RuntimeDecisionTraceSeedComparison[];
   samples: RuntimeDecisionLostPolicyChangeSample[];
 };
 
 export type RuntimeDecisionTraceSeedComparison = Omit<RuntimeDecisionTraceComparison, 'seeds' | 'samples'> & {
   seed: number;
+};
+
+export type RuntimeDecisionTraceDivergence = {
+  seed: number;
+  match: number;
+  controlledTeam: Team;
+  decisionIndex: number;
+  frame: number;
+  currentRawPolicyActionIndex?: number;
+  candidateRawPolicyActionIndex?: number;
+  currentTacticalActionIndex?: number;
+  candidateTacticalActionIndex?: number;
+  currentTacticalActionScores?: number[];
+  candidateTacticalActionScores?: number[];
+  currentFinalActionIndex: number;
+  candidateFinalActionIndex: number;
+  staminaRatio: number;
+  ballDistance: number;
+  ballSpeed: number;
+  finishingPressure: number;
+  ownGoalPressure: number;
+  sideWallPressure: number;
+  attackCornerPressure: number;
+  ownCornerPressure: number;
 };
 
 export type RuntimeDecisionLostPolicyChangeSample = {
@@ -126,6 +157,8 @@ export type RuntimeDecisionLostPolicyChangeSample = {
   candidateRawPolicyActionIndex?: number;
   currentTacticalActionIndex?: number;
   candidateTacticalActionIndex?: number;
+  currentTacticalActionScores?: number[];
+  candidateTacticalActionScores?: number[];
   finalActionIndex: number;
   reasons: string[];
   staminaRatio: number;
@@ -136,6 +169,7 @@ export type RuntimeDecisionLostPolicyChangeSample = {
   sideWallPressure: number;
   attackCornerPressure: number;
   ownCornerPressure: number;
+  afterFinalActionDivergence: boolean;
 };
 
 export type PolicyGateResult = {
@@ -312,6 +346,7 @@ export function compareRuntimeDecisionTraces(
   const seedTotals = new Map<number, MutableDecisionTraceComparison>();
   const totals = emptyDecisionTraceComparison();
   const samples: RuntimeDecisionLostPolicyChangeSample[] = [];
+  const divergenceByMatch = new Map<string, RuntimeDecisionTraceDivergence>();
   const keys = new Set([...currentByKey.keys(), ...candidateByKey.keys()]);
 
   for (const key of [...keys].sort(compareDecisionKeys)) {
@@ -329,8 +364,38 @@ export function compareRuntimeDecisionTraces(
     }
 
     const seed = seedMutableTotals(seedTotals, currentRecord.seed);
-    accumulateDecisionComparison(totals, candidateRecord, currentRecord, samples, sampleLimit);
-    accumulateDecisionComparison(seed, candidateRecord, currentRecord, samples, 0);
+    const matchKey = decisionMatchKey(currentRecord);
+    const afterFinalActionDivergence = divergenceByMatch.has(matchKey);
+    if (!afterFinalActionDivergence && candidateRecord.finalActionIndex !== currentRecord.finalActionIndex) {
+      const divergence = {
+        seed: currentRecord.seed,
+        match: currentRecord.match,
+        controlledTeam: currentRecord.controlledTeam,
+        decisionIndex: currentRecord.decisionIndex,
+        frame: candidateRecord.frame,
+        currentRawPolicyActionIndex: currentRecord.rawPolicyActionIndex,
+        candidateRawPolicyActionIndex: candidateRecord.rawPolicyActionIndex,
+        currentTacticalActionIndex: currentRecord.tacticalActionIndex,
+        candidateTacticalActionIndex: candidateRecord.tacticalActionIndex,
+        currentTacticalActionScores: currentRecord.tacticalActionScores ? [...currentRecord.tacticalActionScores] : undefined,
+        candidateTacticalActionScores: candidateRecord.tacticalActionScores ? [...candidateRecord.tacticalActionScores] : undefined,
+        currentFinalActionIndex: currentRecord.finalActionIndex,
+        candidateFinalActionIndex: candidateRecord.finalActionIndex,
+        staminaRatio: candidateRecord.staminaRatio,
+        ballDistance: candidateRecord.ballDistance,
+        ballSpeed: candidateRecord.ballSpeed,
+        finishingPressure: candidateRecord.finishingPressure,
+        ownGoalPressure: candidateRecord.ownGoalPressure,
+        sideWallPressure: candidateRecord.sideWallPressure,
+        attackCornerPressure: candidateRecord.attackCornerPressure,
+        ownCornerPressure: candidateRecord.ownCornerPressure
+      };
+      divergenceByMatch.set(matchKey, divergence);
+      totals.firstFinalActionDivergences.push(divergence);
+      seed.firstFinalActionDivergences.push(divergence);
+    }
+    accumulateDecisionComparison(totals, candidateRecord, currentRecord, samples, sampleLimit, afterFinalActionDivergence);
+    accumulateDecisionComparison(seed, candidateRecord, currentRecord, samples, 0, afterFinalActionDivergence);
   }
 
   return {
@@ -598,16 +663,23 @@ type MutableDecisionTraceComparison = Omit<RuntimeDecisionTraceComparison, 'seed
 function emptyDecisionTraceComparison(): MutableDecisionTraceComparison {
   return {
     comparedDecisions: 0,
+    alignedComparedDecisions: 0,
+    afterFinalActionDivergenceComparedDecisions: 0,
     missingCurrentDecisions: 0,
     missingCandidateDecisions: 0,
     rawPolicyChanges: 0,
+    alignedRawPolicyChanges: 0,
+    afterFinalActionDivergenceRawPolicyChanges: 0,
     tacticalActionChanges: 0,
     finalActionChanges: 0,
     lostPolicyChanges: 0,
+    alignedLostPolicyChanges: 0,
+    afterFinalActionDivergenceLostPolicyChanges: 0,
     lostWithTacticalRollout: 0,
     lostWithStaminaConserve: 0,
     lostWithCriticalStamina: 0,
-    lostWithFlatPolicy: 0
+    lostWithFlatPolicy: 0,
+    firstFinalActionDivergences: []
   };
 }
 
@@ -629,14 +701,19 @@ function accumulateDecisionComparison(
   candidate: RuntimeDecisionTraceRecord,
   current: RuntimeDecisionTraceRecord,
   samples: RuntimeDecisionLostPolicyChangeSample[],
-  sampleLimit: number
+  sampleLimit: number,
+  afterFinalActionDivergence: boolean
 ): void {
   totals.comparedDecisions += 1;
+  totals.alignedComparedDecisions += afterFinalActionDivergence ? 0 : 1;
+  totals.afterFinalActionDivergenceComparedDecisions += afterFinalActionDivergence ? 1 : 0;
   const rawPolicyChanged = candidate.rawPolicyActionIndex !== current.rawPolicyActionIndex;
   const tacticalActionChanged = candidate.tacticalActionIndex !== current.tacticalActionIndex;
   const finalActionChanged = candidate.finalActionIndex !== current.finalActionIndex;
 
   totals.rawPolicyChanges += rawPolicyChanged ? 1 : 0;
+  totals.alignedRawPolicyChanges += rawPolicyChanged && !afterFinalActionDivergence ? 1 : 0;
+  totals.afterFinalActionDivergenceRawPolicyChanges += rawPolicyChanged && afterFinalActionDivergence ? 1 : 0;
   totals.tacticalActionChanges += tacticalActionChanged ? 1 : 0;
   totals.finalActionChanges += finalActionChanged ? 1 : 0;
 
@@ -646,6 +723,8 @@ function accumulateDecisionComparison(
 
   const reasons = hiddenPolicyChangeReasons(candidate, current);
   totals.lostPolicyChanges += 1;
+  totals.alignedLostPolicyChanges += afterFinalActionDivergence ? 0 : 1;
+  totals.afterFinalActionDivergenceLostPolicyChanges += afterFinalActionDivergence ? 1 : 0;
   totals.lostWithTacticalRollout += reasons.includes('tactical-rollout') ? 1 : 0;
   totals.lostWithStaminaConserve += reasons.includes('stamina-conserve') ? 1 : 0;
   totals.lostWithCriticalStamina += reasons.includes('critical-stamina') ? 1 : 0;
@@ -662,6 +741,8 @@ function accumulateDecisionComparison(
       candidateRawPolicyActionIndex: candidate.rawPolicyActionIndex,
       currentTacticalActionIndex: current.tacticalActionIndex,
       candidateTacticalActionIndex: candidate.tacticalActionIndex,
+      currentTacticalActionScores: current.tacticalActionScores ? [...current.tacticalActionScores] : undefined,
+      candidateTacticalActionScores: candidate.tacticalActionScores ? [...candidate.tacticalActionScores] : undefined,
       finalActionIndex: candidate.finalActionIndex,
       reasons,
       staminaRatio: candidate.staminaRatio,
@@ -671,7 +752,8 @@ function accumulateDecisionComparison(
       ownGoalPressure: candidate.ownGoalPressure,
       sideWallPressure: candidate.sideWallPressure,
       attackCornerPressure: candidate.attackCornerPressure,
-      ownCornerPressure: candidate.ownCornerPressure
+      ownCornerPressure: candidate.ownCornerPressure,
+      afterFinalActionDivergence
     });
   }
 }
@@ -711,6 +793,10 @@ function decisionRecordsByKey(
 
 function decisionRecordKey(record: RuntimeDecisionTraceRecord): string {
   return `${record.seed}|${record.match}|${record.controlledTeam}|${record.decisionIndex}`;
+}
+
+function decisionMatchKey(record: RuntimeDecisionTraceRecord): string {
+  return `${record.seed}|${record.match}|${record.controlledTeam}`;
 }
 
 function compareDecisionKeys(a: string, b: string): number {

@@ -231,6 +231,7 @@ describe('policy adoption gate', () => {
         policyActionIndex: 1,
         tacticalActionIndex: 4,
         finalActionIndex: 4,
+        tacticalActionScores: [0, 0.1, 0, 0, 0.4, 0, 0, 0, 0],
         tacticalRolloutChanged: true
       }),
       decisionRecord({
@@ -259,6 +260,7 @@ describe('policy adoption gate', () => {
         policyActionIndex: 2,
         tacticalActionIndex: 4,
         finalActionIndex: 4,
+        tacticalActionScores: [0, 0, 0.2, 0, 0.45, 0, 0, 0, 0],
         tacticalRolloutChanged: true
       }),
       decisionRecord({
@@ -313,8 +315,142 @@ describe('policy adoption gate', () => {
       finalActionIndex: 4,
       currentRawPolicyActionIndex: 1,
       candidateRawPolicyActionIndex: 2,
+      currentTacticalActionScores: [0, 0.1, 0, 0, 0.4, 0, 0, 0, 0],
+      candidateTacticalActionScores: [0, 0, 0.2, 0, 0.45, 0, 0, 0, 0],
+      afterFinalActionDivergence: false,
       reasons: ['tactical-rollout']
     });
+  });
+
+  it('separates aligned decision changes from post-divergence comparisons', () => {
+    const current = [
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 1,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 1,
+        rawPolicyActionIndex: 1,
+        tacticalActionIndex: 4,
+        finalActionIndex: 4,
+        staminaRatio: 0.72,
+        ballDistance: 120,
+        ownGoalPressure: 0.2,
+        finishingPressure: 0.4
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 2,
+        rawPolicyActionIndex: 2,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 3,
+        rawPolicyActionIndex: 2,
+        finalActionIndex: 4
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 1,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 5,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      })
+    ];
+    const candidate = [
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 2,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 1,
+        rawPolicyActionIndex: 1,
+        tacticalActionIndex: 5,
+        tacticalActionScores: [0, 0.1, 0, 0, 0.2, 0.4, 0, 0, 0],
+        finalActionIndex: 5,
+        staminaRatio: 0.68,
+        ballDistance: 132,
+        ownGoalPressure: 0.25,
+        finishingPressure: 0.35
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 2,
+        rawPolicyActionIndex: 3,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 0,
+        decisionIndex: 3,
+        rawPolicyActionIndex: 3,
+        finalActionIndex: 5
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 1,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 7,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      })
+    ];
+
+    const comparison = compareRuntimeDecisionTraces(candidate, current);
+
+    expect(comparison.firstFinalActionDivergences).toEqual([
+      expect.objectContaining({
+        seed: 109,
+        match: 0,
+        decisionIndex: 1,
+        currentFinalActionIndex: 4,
+        candidateFinalActionIndex: 5,
+        currentRawPolicyActionIndex: 1,
+        candidateRawPolicyActionIndex: 1,
+        currentTacticalActionIndex: 4,
+        candidateTacticalActionIndex: 5,
+        candidateTacticalActionScores: [0, 0.1, 0, 0, 0.2, 0.4, 0, 0, 0],
+        staminaRatio: 0.68,
+        ballDistance: 132,
+        ownGoalPressure: 0.25,
+        finishingPressure: 0.35
+      })
+    ]);
+    expect(comparison.alignedComparedDecisions).toBe(3);
+    expect(comparison.afterFinalActionDivergenceComparedDecisions).toBe(2);
+    expect(comparison.alignedRawPolicyChanges).toBe(2);
+    expect(comparison.afterFinalActionDivergenceRawPolicyChanges).toBe(2);
+    expect(comparison.alignedLostPolicyChanges).toBe(2);
+    expect(comparison.afterFinalActionDivergenceLostPolicyChanges).toBe(1);
+    expect(comparison.seeds[0]).toMatchObject({
+      seed: 109,
+      alignedLostPolicyChanges: 2,
+      afterFinalActionDivergenceLostPolicyChanges: 1
+    });
+    expect(comparison.samples).toEqual([
+      expect.objectContaining({ decisionIndex: 0, afterFinalActionDivergence: false }),
+      expect.objectContaining({ decisionIndex: 2, afterFinalActionDivergence: true }),
+      expect.objectContaining({ match: 1, decisionIndex: 0, afterFinalActionDivergence: false })
+    ]);
   });
 });
 
@@ -370,6 +506,7 @@ function decisionRecord(overrides: Partial<RuntimeDecisionTraceRecord>): Runtime
     sideWallPressure: 0,
     attackCornerPressure: 0,
     ownCornerPressure: 0,
+    tacticalActionScores: undefined,
     finalActionIndex: 4,
     tacticalRolloutUsed: false,
     tacticalRolloutChanged: false,

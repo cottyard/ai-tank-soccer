@@ -39,6 +39,7 @@ export type NeuralDecisionTrace = {
   rawPolicyActionIndex?: number;
   policyActionIndex?: number;
   tacticalActionIndex?: number;
+  tacticalActionScores?: number[];
   finalActionIndex: number;
   tacticalRolloutUsed: boolean;
   tacticalRolloutChanged: boolean;
@@ -113,6 +114,7 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
         policyActionIndex: decision.policyActionIndex,
         rawPolicyActionIndex: decision.rawPolicyActionIndex,
         tacticalActionIndex: decision.tacticalActionIndex,
+        tacticalActionScores: decision.tacticalActionScores,
         finalCommand: regulatedCommand,
         tacticalRolloutUsed: decision.tacticalRolloutUsed,
         tacticalRolloutChanged: decision.tacticalRolloutChanged,
@@ -600,6 +602,7 @@ function policyOutputToDecision(
   policyActionIndex?: number;
   rawPolicyActionIndex?: number;
   tacticalActionIndex?: number;
+  tacticalActionScores?: number[];
   tacticalRolloutUsed: boolean;
   tacticalRolloutChanged: boolean;
   flatPolicy: boolean;
@@ -632,15 +635,16 @@ function policyOutputToDecision(
     state,
     team,
     policyActionIndex
-  }).actionIndex;
+  });
 
   return {
-    command: actionIndexToCommand(bestIndex),
+    command: actionIndexToCommand(bestIndex.actionIndex),
     policyActionIndex,
     rawPolicyActionIndex: policyActionIndex,
-    tacticalActionIndex: bestIndex,
+    tacticalActionIndex: bestIndex.actionIndex,
+    tacticalActionScores: bestIndex.actionScores,
     tacticalRolloutUsed: true,
-    tacticalRolloutChanged: bestIndex !== policyActionIndex,
+    tacticalRolloutChanged: bestIndex.actionIndex !== policyActionIndex,
     flatPolicy: false
   };
 }
@@ -653,6 +657,7 @@ function decisionTrace(
   decision: {
     policyActionIndex?: number;
     tacticalActionIndex?: number;
+    tacticalActionScores?: number[];
     finalCommand: TankCommand;
     tacticalRolloutUsed: boolean;
     tacticalRolloutChanged: boolean;
@@ -677,6 +682,7 @@ function decisionTrace(
     rawPolicyActionIndex: decision.rawPolicyActionIndex,
     policyActionIndex: decision.policyActionIndex,
     tacticalActionIndex: decision.tacticalActionIndex,
+    tacticalActionScores: decision.tacticalActionScores,
     finalActionIndex: commandToActionIndex(decision.finalCommand),
     tacticalRolloutUsed: decision.tacticalRolloutUsed,
     tacticalRolloutChanged: decision.tacticalRolloutChanged,

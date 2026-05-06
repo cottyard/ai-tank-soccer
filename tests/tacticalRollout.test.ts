@@ -15,6 +15,9 @@ describe('tactical rollout action selector', () => {
 
     expect(choice.actionIndex).toBe(8);
     expect(choice.score).toBeGreaterThan(choice.policyScore);
+    expect(choice.actionScores).toHaveLength(9);
+    expect(choice.actionScores[2]).toBeCloseTo(choice.policyScore, 9);
+    expect(Math.max(...choice.actionScores)).toBeCloseTo(choice.score, 9);
   });
 
   it('keeps the policy action when every rollout has the same tactical value', () => {
