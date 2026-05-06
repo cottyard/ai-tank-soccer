@@ -257,6 +257,16 @@ describe('native policy trainer', () => {
         criticalRegulated: number;
         survivalRate: number;
       };
+      runtimeDecisionOutcomes?: Record<string, {
+        count: number;
+        meanReturn: number;
+        meanAdvantage: number;
+        meanAbsAdvantage: number;
+        positiveReturns: number;
+        negativeReturns: number;
+        positiveAdvantages: number;
+        negativeAdvantages: number;
+      }>;
     };
     expect(nativeMetrics.advantageBaseline).toBe('learned');
     expect(nativeMetrics.openStartRatio).toBe(0.25);
@@ -278,6 +288,15 @@ describe('native policy trainer', () => {
     expect(survival.sampled).toBeGreaterThan(0);
     expect(survival.survivalRate).toBeGreaterThanOrEqual(0);
     expect(survival.survivalRate).toBeLessThanOrEqual(1);
+    expect(nativeMetrics.runtimeDecisionOutcomes).toBeDefined();
+    expect(nativeMetrics.runtimeDecisionOutcomes?.survived.count).toBe(survival.survived);
+    expect(nativeMetrics.runtimeDecisionOutcomes?.changed.count).toBe(survival.changed);
+    expect(nativeMetrics.runtimeDecisionOutcomes?.tacticalChanged.count).toBe(survival.tacticalChanged);
+    expect(nativeMetrics.runtimeDecisionOutcomes?.staminaConserved.count).toBe(survival.staminaConserved);
+    expect(nativeMetrics.runtimeDecisionOutcomes?.criticalRegulated.count).toBe(survival.criticalRegulated);
+    expect(nativeMetrics.runtimeDecisionOutcomes?.survived.meanReturn).toEqual(expect.any(Number));
+    expect(nativeMetrics.runtimeDecisionOutcomes?.survived.meanAdvantage).toEqual(expect.any(Number));
+    expect(nativeMetrics.runtimeDecisionOutcomes?.survived.meanAbsAdvantage).toBeGreaterThanOrEqual(0);
   });
 
   (cargoPath ? it : it.skip)('supports frozen opponent weights for Rust PPO self-play', () => {

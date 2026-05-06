@@ -58,6 +58,7 @@ const TRADITIONAL_NEAR_BALL_BUFFER: f64 = 24.0;
 const TRADITIONAL_SIDE_WALL_DEPTH: f64 = BALL_RADIUS + 54.0;
 const TRADITIONAL_OPPONENT_CORNER_DEPTH: f64 = BALL_RADIUS + TANK_LENGTH + 72.0;
 const TRADITIONAL_STRAIGHT_HEADING_TOLERANCE: f64 = 0.18;
+const OUTCOME_SIGN_EPSILON: f64 = 1e-9;
 
 #[derive(Clone)]
 struct Sample {
@@ -224,6 +225,7 @@ struct Collection {
     samples: Vec<Sample>,
     decisions: usize,
     policy_action_survival: PolicyActionSurvival,
+    runtime_decision_outcomes: RuntimeDecisionOutcomes,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -238,6 +240,7 @@ struct TrainingResult {
     samples: usize,
     decisions: usize,
     policy_action_survival: PolicyActionSurvival,
+    runtime_decision_outcomes: RuntimeDecisionOutcomes,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -275,6 +278,27 @@ struct PolicyActionSurvival {
     tactical_changed: usize,
     stamina_conserved: usize,
     critical_regulated: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeDecisionOutcomes {
+    survived: RuntimeDecisionOutcomeStats,
+    changed: RuntimeDecisionOutcomeStats,
+    tactical_changed: RuntimeDecisionOutcomeStats,
+    stamina_conserved: RuntimeDecisionOutcomeStats,
+    critical_regulated: RuntimeDecisionOutcomeStats,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeDecisionOutcomeStats {
+    count: usize,
+    return_sum: f64,
+    advantage_sum: f64,
+    abs_advantage_sum: f64,
+    positive_returns: usize,
+    negative_returns: usize,
+    positive_advantages: usize,
+    negative_advantages: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -577,6 +601,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         samples: collection.samples.len(),
         decisions: collection.decisions,
         policy_action_survival: collection.policy_action_survival,
+        runtime_decision_outcomes: collection.runtime_decision_outcomes,
         start_families: collection.start_families,
         frames: collection.frames,
         red_goals: collection.red_goals,
@@ -763,6 +788,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     let decision_count = all_decisions.len();
     let policy_action_survival = summarize_policy_action_survival(&all_decisions);
     let advantages = normalized_advantages(&all_decisions, options.advantage_baseline);
+    let runtime_decision_outcomes = summarize_runtime_decision_outcomes(&all_decisions, &advantages);
     let samples = all_decisions
         .into_iter()
         .zip(advantages)
@@ -787,6 +813,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
         samples,
         decisions: decision_count,
         policy_action_survival,
+        runtime_decision_outcomes,
         start_families,
         frames: completed_frames,
         red_goals,
@@ -821,6 +848,73 @@ fn summarize_policy_action_survival(decisions: &[(PendingDecision, f64)]) -> Pol
     }
 
     summary
+}
+
+fn summarize_runtime_decision_outcomes(
+    decisions: &[(PendingDecision, f64)],
+    advantages: &[f64],
+) -> RuntimeDecisionOutcomes {
+    let mut summary = RuntimeDecisionOutcomes {
+        survived: empty_runtime_decision_outcome_stats(),
+        changed: empty_runtime_decision_outcome_stats(),
+        tactical_changed: empty_runtime_decision_outcome_stats(),
+        stamina_conserved: empty_runtime_decision_outcome_stats(),
+        critical_regulated: empty_runtime_decision_outcome_stats(),
+    };
+
+    for ((decision, total_return), advantage) in decisions.iter().zip(advantages.iter()) {
+        if !decision.trainable {
+            continue;
+        }
+        if decision.sampled_action == decision.action {
+            summary.survived.record(*total_return, *advantage);
+        } else {
+            summary.changed.record(*total_return, *advantage);
+        }
+        if decision.tactical_changed {
+            summary.tactical_changed.record(*total_return, *advantage);
+        }
+        if decision.stamina_conserved {
+            summary.stamina_conserved.record(*total_return, *advantage);
+        }
+        if decision.critical_regulated {
+            summary.critical_regulated.record(*total_return, *advantage);
+        }
+    }
+
+    summary
+}
+
+fn empty_runtime_decision_outcome_stats() -> RuntimeDecisionOutcomeStats {
+    RuntimeDecisionOutcomeStats {
+        count: 0,
+        return_sum: 0.0,
+        advantage_sum: 0.0,
+        abs_advantage_sum: 0.0,
+        positive_returns: 0,
+        negative_returns: 0,
+        positive_advantages: 0,
+        negative_advantages: 0,
+    }
+}
+
+impl RuntimeDecisionOutcomeStats {
+    fn record(&mut self, total_return: f64, advantage: f64) {
+        self.count += 1;
+        self.return_sum += total_return;
+        self.advantage_sum += advantage;
+        self.abs_advantage_sum += advantage.abs();
+        if total_return > OUTCOME_SIGN_EPSILON {
+            self.positive_returns += 1;
+        } else if total_return < -OUTCOME_SIGN_EPSILON {
+            self.negative_returns += 1;
+        }
+        if advantage > OUTCOME_SIGN_EPSILON {
+            self.positive_advantages += 1;
+        } else if advantage < -OUTCOME_SIGN_EPSILON {
+            self.negative_advantages += 1;
+        }
+    }
 }
 
 fn load_league_opponents(weights: &[f64], options: &Options) -> Vec<LeagueOpponent> {
@@ -3420,6 +3514,13 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "    \"criticalRegulated\": {},\n",
             "    \"survivalRate\": {:.17}\n",
             "  }},\n",
+            "  \"runtimeDecisionOutcomes\": {{\n",
+            "    \"survived\": {},\n",
+            "    \"changed\": {},\n",
+            "    \"tacticalChanged\": {},\n",
+            "    \"staminaConserved\": {},\n",
+            "    \"criticalRegulated\": {}\n",
+            "  }},\n",
             "  \"startFamilies\": {{\n",
             "    \"open\": {},\n",
             "    \"outcomeCurriculum\": {},\n",
@@ -3464,6 +3565,11 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.policy_action_survival.stamina_conserved,
         result.policy_action_survival.critical_regulated,
         policy_action_survival_rate(result.policy_action_survival),
+        serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.survived),
+        serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.changed),
+        serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.tactical_changed),
+        serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.stamina_conserved),
+        serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.critical_regulated),
         result.start_families.open,
         result.start_families.outcome_curriculum,
         result.start_families.own_goal_defense,
@@ -3473,6 +3579,39 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.final_state.ball.position.x,
         result.final_state.ball.position.y
     )
+}
+
+fn serialize_runtime_decision_outcome_stats(stats: RuntimeDecisionOutcomeStats) -> String {
+    format!(
+        concat!(
+            "{{",
+            "\"count\": {}, ",
+            "\"meanReturn\": {:.17}, ",
+            "\"meanAdvantage\": {:.17}, ",
+            "\"meanAbsAdvantage\": {:.17}, ",
+            "\"positiveReturns\": {}, ",
+            "\"negativeReturns\": {}, ",
+            "\"positiveAdvantages\": {}, ",
+            "\"negativeAdvantages\": {}",
+            "}}"
+        ),
+        stats.count,
+        mean_or_zero(stats.return_sum, stats.count),
+        mean_or_zero(stats.advantage_sum, stats.count),
+        mean_or_zero(stats.abs_advantage_sum, stats.count),
+        stats.positive_returns,
+        stats.negative_returns,
+        stats.positive_advantages,
+        stats.negative_advantages
+    )
+}
+
+fn mean_or_zero(sum: f64, count: usize) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
 }
 
 fn policy_action_survival_rate(summary: PolicyActionSurvival) -> f64 {
