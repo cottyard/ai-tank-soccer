@@ -68,6 +68,7 @@ describe('policy-gradient promotion loop', () => {
         advantageBaseline: 'learned',
         actionMode: 'runtime',
         runtimeSurvivorsOnly: false,
+        runtimeWrapperWeightMode: 'none',
         opponentMode: 'league',
         leagueCurrentWeight: 1,
         leagueTraditionalWeight: 0.15
@@ -332,6 +333,7 @@ describe('policy-gradient promotion loop', () => {
         advantageBaseline: 'start-team-time',
         actionMode: 'runtime',
         runtimeSurvivorsOnly: true,
+        runtimeWrapperWeightMode: 'tactical-downweight',
         opponentMode: 'self',
         trainer: 'rust-policy-gradient'
       }
@@ -372,6 +374,7 @@ describe('policy-gradient promotion loop', () => {
       startStateMode: 'corner-fight',
       advantageBaseline: 'start-team-time',
       runtimeSurvivorsOnly: true,
+      runtimeWrapperWeightMode: 'tactical-downweight',
       opponentMode: 'self'
     });
     expect(JSON.parse(readFileSync(bestPath, 'utf8'))).toMatchObject({ weights: candidate });
@@ -384,6 +387,7 @@ describe('policy-gradient promotion loop', () => {
       seed: 23,
       advantageBaseline: 'start-team-time',
       opponentMode: 'self',
+      runtimeWrapperWeightMode: 'tactical-downweight',
       epochs: 1,
       batchSize: 96,
       learningRate: 0.0008

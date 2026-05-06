@@ -37,6 +37,7 @@ export type PolicyGradientCliOptions = {
   advantageBaseline: PolicyGradientAdvantageBaseline;
   actionMode: 'raw' | 'runtime';
   runtimeSurvivorsOnly: boolean;
+  runtimeWrapperWeightMode: 'none' | 'tactical-downweight';
   opponentMode: 'self' | 'traditional' | 'league';
   leagueOpponentWeights: string[];
   leagueCurrentWeight: number;
@@ -60,6 +61,7 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   advantageBaseline: 'global',
   actionMode: 'raw',
   runtimeSurvivorsOnly: false,
+  runtimeWrapperWeightMode: 'none',
   opponentMode: 'self',
   leagueOpponentWeights: [],
   leagueCurrentWeight: 1,
@@ -86,6 +88,7 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
     actionMode: actionModeArg(argv, '--action-mode', DEFAULT_OPTIONS.actionMode),
     runtimeSurvivorsOnly: argv.includes('--runtime-survivors-only'),
+    runtimeWrapperWeightMode: runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', DEFAULT_OPTIONS.runtimeWrapperWeightMode),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
     leagueOpponentWeights: stringArgs(argv, '--league-opponent-weights'),
     leagueCurrentWeight: Math.max(0, numberArg(argv, '--league-current-weight', DEFAULT_OPTIONS.leagueCurrentWeight)),
@@ -191,6 +194,8 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     options.actionMode,
     '--runtime-survivors-only',
     String(options.runtimeSurvivorsOnly),
+    '--runtime-wrapper-weight-mode',
+    options.runtimeWrapperWeightMode,
     '--opponent-mode',
     options.opponentMode,
     '--league-current-weight',
@@ -393,6 +398,17 @@ function actionModeArg(
 ): 'raw' | 'runtime' {
   const value = valueAfter(argv, name);
   return value === 'raw' || value === 'runtime'
+    ? value
+    : fallback;
+}
+
+function runtimeWrapperWeightModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: PolicyGradientCliOptions['runtimeWrapperWeightMode']
+): PolicyGradientCliOptions['runtimeWrapperWeightMode'] {
+  const value = valueAfter(argv, name);
+  return value === 'none' || value === 'tactical-downweight'
     ? value
     : fallback;
 }

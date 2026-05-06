@@ -255,6 +255,8 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     '--action-mode',
     stringArg(argv, '--action-mode') ?? 'runtime',
     ...(argv.includes('--runtime-survivors-only') ? ['--runtime-survivors-only'] : []),
+    '--runtime-wrapper-weight-mode',
+    stringArg(argv, '--runtime-wrapper-weight-mode') ?? 'none',
     '--opponent-mode',
     stringArg(argv, '--opponent-mode') ?? 'league',
     '--league-current-weight',
@@ -453,6 +455,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     openStartRatio: result.training.openStartRatio,
     actionMode: result.training.actionMode,
     runtimeSurvivorsOnly: result.training.runtimeSurvivorsOnly,
+    runtimeWrapperWeightMode: result.training.runtimeWrapperWeightMode,
     matches: result.training.matches,
     frames: result.training.frames,
     epochs: result.training.epochs,
@@ -493,6 +496,7 @@ function trainingFromCandidateMetadata(
     advantageBaseline: advantageBaselineMetadata(metadata, fallback.advantageBaseline),
     actionMode: actionModeMetadata(metadata, fallback.actionMode),
     runtimeSurvivorsOnly: booleanMetadata(metadata, 'runtimeSurvivorsOnly', fallback.runtimeSurvivorsOnly),
+    runtimeWrapperWeightMode: runtimeWrapperWeightModeMetadata(metadata, fallback.runtimeWrapperWeightMode),
     opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
   };
 }
@@ -560,6 +564,14 @@ function actionModeMetadata(
 ): PolicyGradientCliOptions['actionMode'] {
   const value = metadata.actionMode;
   return value === 'raw' || value === 'runtime' ? value : fallback;
+}
+
+function runtimeWrapperWeightModeMetadata(
+  metadata: Record<string, unknown>,
+  fallback: PolicyGradientCliOptions['runtimeWrapperWeightMode']
+): PolicyGradientCliOptions['runtimeWrapperWeightMode'] {
+  const value = metadata.runtimeWrapperWeightMode;
+  return value === 'none' || value === 'tactical-downweight' ? value : fallback;
 }
 
 function opponentModeMetadata(

@@ -83,6 +83,7 @@ export type PolicyGradientSearchOptions = {
   advantageBaseline: string;
   actionMode: string;
   runtimeSurvivorsOnly: boolean;
+  runtimeWrapperWeightMode: PolicyGradientCliOptions['runtimeWrapperWeightMode'];
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
@@ -155,6 +156,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const discount = numberArg(argv, '--discount', 0.996);
   const actionMode = stringArg(argv, '--action-mode') ?? 'runtime';
   const runtimeSurvivorsOnly = argv.includes('--runtime-survivors-only');
+  const runtimeWrapperWeightMode = runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', 'none');
   const bestPath = stringArg(argv, '--best') ?? 'public/models/neural-best.json';
   const outputDir = stringArg(argv, '--output-dir') ?? `training-runs/policy-gradient-search-s${seed}`;
 
@@ -172,6 +174,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     advantageBaseline,
     actionMode,
     runtimeSurvivorsOnly,
+    runtimeWrapperWeightMode,
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
@@ -188,6 +191,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       advantageBaseline,
       actionMode,
       runtimeSurvivorsOnly,
+      runtimeWrapperWeightMode,
       opponentMode
     }),
     grid,
@@ -316,6 +320,7 @@ function parseTrainingOptions(
     advantageBaseline: string;
     actionMode: string;
     runtimeSurvivorsOnly: boolean;
+    runtimeWrapperWeightMode: PolicyGradientCliOptions['runtimeWrapperWeightMode'];
     opponentMode: string;
   }
 ): PolicyGradientCliOptions {
@@ -348,6 +353,8 @@ function parseTrainingOptions(
     '--action-mode',
     base.actionMode,
     ...(base.runtimeSurvivorsOnly ? ['--runtime-survivors-only'] : []),
+    '--runtime-wrapper-weight-mode',
+    base.runtimeWrapperWeightMode,
     '--opponent-mode',
     base.opponentMode,
     '--league-current-weight',
@@ -552,7 +559,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestStartStateMode: result.best.variant.startStateMode,
     bestOpenStartRatio: result.best.variant.openStartRatio,
     bestAdvantageBaseline: result.best.variant.advantageBaseline,
-    bestOpponentMode: result.best.variant.opponentMode
+    bestOpponentMode: result.best.variant.opponentMode,
+    runtimeWrapperWeightMode: result.best.training.runtimeWrapperWeightMode
   })}\n`, 'utf8');
 }
 
@@ -678,6 +686,17 @@ function opponentModeArg(
   fallback: PolicyGradientCliOptions['opponentMode']
 ): PolicyGradientCliOptions['opponentMode'] {
   return firstValid(opponentModeListArg(argv, name, [fallback]), fallback);
+}
+
+function runtimeWrapperWeightModeArg(
+  argv: readonly string[],
+  name: string,
+  fallback: PolicyGradientCliOptions['runtimeWrapperWeightMode']
+): PolicyGradientCliOptions['runtimeWrapperWeightMode'] {
+  const value = stringArg(argv, name);
+  return value === 'none' || value === 'tactical-downweight'
+    ? value
+    : fallback;
 }
 
 function startStateModeListArg(

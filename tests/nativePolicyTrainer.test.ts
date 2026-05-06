@@ -232,6 +232,7 @@ describe('native policy trainer', () => {
         openStartRatio?: number;
         advantageBaseline?: string;
         actionMode?: string;
+        runtimeWrapperWeightMode?: string;
         opponentMode?: string;
       };
     };
@@ -240,12 +241,14 @@ describe('native policy trainer', () => {
     expect(nativeOutput.metadata?.openStartRatio).toBe(0.25);
     expect(nativeOutput.metadata?.advantageBaseline).toBe('learned');
     expect(nativeOutput.metadata?.actionMode).toBe('runtime');
+    expect(nativeOutput.metadata?.runtimeWrapperWeightMode).toBe('none');
     expect(nativeOutput.metadata?.opponentMode).toBe('traditional');
 
     const nativeMetrics = JSON.parse(readFileSync(firstMetrics, 'utf8')) as {
       advantageBaseline?: string;
       openStartRatio?: number;
       actionMode?: string;
+      runtimeWrapperWeightMode?: string;
       opponentMode?: string;
       startFamilies?: Record<string, number>;
       policyActionSurvival?: {
@@ -271,6 +274,7 @@ describe('native policy trainer', () => {
     expect(nativeMetrics.advantageBaseline).toBe('learned');
     expect(nativeMetrics.openStartRatio).toBe(0.25);
     expect(nativeMetrics.actionMode).toBe('runtime');
+    expect(nativeMetrics.runtimeWrapperWeightMode).toBe('none');
     expect(nativeMetrics.opponentMode).toBe('traditional');
     expect(nativeMetrics.startFamilies).toMatchObject({
       open: 2,
@@ -422,6 +426,91 @@ describe('native policy trainer', () => {
     expect(metrics.policyActionSurvival?.changed).toBeGreaterThan(0);
     expect(metrics.samples).toBe(metrics.policyActionSurvival?.survived);
     expect(metrics.samples).toBeLessThan(metrics.policyActionSurvival?.sampled ?? 0);
+  });
+
+  (cargoPath ? it : it.skip)('can down-weight tactical wrapper rewrites without dropping samples', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-wrapper-weight-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const defaultOutputWeights = join(workdir, 'default-trained.json');
+    const defaultMetricsOutput = join(workdir, 'default-metrics.json');
+    const weightedOutputWeights = join(workdir, 'weighted-trained.json');
+    const weightedMetricsOutput = join(workdir, 'weighted-metrics.json');
+    const targetDir = join(workdir, 'target');
+    const weights = defaultNeuralWeights();
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    const nativeBin = join(targetDir, 'release', 'soccer-policy-trainer.exe');
+    const baseArgs = [
+      '--native',
+      '--native-bin',
+      nativeBin,
+      '--input',
+      inputWeights,
+      '--seed',
+      '94',
+      '--matches',
+      '8',
+      '--frames',
+      '60',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '8',
+      '--action-mode',
+      'runtime'
+    ];
+
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      defaultOutputWeights,
+      '--metrics-output',
+      defaultMetricsOutput
+    ]));
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      weightedOutputWeights,
+      '--metrics-output',
+      weightedMetricsOutput,
+      '--runtime-wrapper-weight-mode',
+      'tactical-downweight'
+    ]));
+
+    const defaultMetrics = JSON.parse(readFileSync(defaultMetricsOutput, 'utf8')) as {
+      runtimeWrapperWeightMode?: string;
+      samples: number;
+      policyActionSurvival?: { tacticalChanged: number };
+    };
+    const weightedMetrics = JSON.parse(readFileSync(weightedMetricsOutput, 'utf8')) as {
+      runtimeWrapperWeightMode?: string;
+      samples: number;
+      policyActionSurvival?: { tacticalChanged: number };
+    };
+    const weightedOutput = JSON.parse(readFileSync(weightedOutputWeights, 'utf8')) as {
+      metadata?: { runtimeWrapperWeightMode?: string };
+    };
+
+    expect(defaultMetrics.runtimeWrapperWeightMode).toBe('none');
+    expect(weightedMetrics.runtimeWrapperWeightMode).toBe('tactical-downweight');
+    expect(weightedOutput.metadata?.runtimeWrapperWeightMode).toBe('tactical-downweight');
+    expect(weightedMetrics.policyActionSurvival?.tacticalChanged).toBeGreaterThan(0);
+    expect(weightedMetrics.samples).toBe(defaultMetrics.samples);
   });
 
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {
