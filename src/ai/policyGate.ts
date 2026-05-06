@@ -48,6 +48,32 @@ export type RuntimeTraceSummary = RuntimeEvaluationResult & {
   seeds: RuntimeTraceSeedSummary[];
 };
 
+export type RuntimeTraceDelta = RuntimeEvaluationResult & {
+  decisions: number;
+  policyActionCounts: number[];
+  tacticalActionCounts: number[];
+  finalActionCounts: number[];
+  policyActionDistributionChangeCount: number;
+  policyActionDistributionChangeRate: number;
+  tacticalActionDistributionChangeCount: number;
+  tacticalActionDistributionChangeRate: number;
+  finalActionDistributionChangeCount: number;
+  finalActionDistributionChangeRate: number;
+  tacticalRolloutUseRate: number;
+  tacticalRolloutChangeRate: number;
+  staminaConserveRate: number;
+  criticalStaminaRegulationRate: number;
+  flatPolicyRate: number;
+  averageStamina: number;
+  averageBallDistance: number;
+  averageBallSpeed: number;
+  averageFinishingPressure: number;
+  averageOwnGoalPressure: number;
+  averageSideWallPressure: number;
+  averageAttackCornerPressure: number;
+  averageOwnCornerPressure: number;
+};
+
 export type RuntimeTraceSeedSummary = RuntimeEvaluationResult & {
   seed: number;
   decisions: number;
@@ -160,6 +186,56 @@ export function traceRuntimePolicy(
     averageAttackCornerPressure: safeAverage(totals.attackCornerPressureSum, totals.decisions),
     averageOwnCornerPressure: safeAverage(totals.ownCornerPressureSum, totals.decisions),
     seeds: seedSummaries
+  };
+}
+
+export function compareRuntimeTraces(
+  candidate: RuntimeTraceSummary,
+  current: RuntimeTraceSummary
+): RuntimeTraceDelta {
+  const policyActionCounts = subtractCounts(candidate.policyActionCounts, current.policyActionCounts);
+  const tacticalActionCounts = subtractCounts(candidate.tacticalActionCounts, current.tacticalActionCounts);
+  const finalActionCounts = subtractCounts(candidate.finalActionCounts, current.finalActionCounts);
+  const policyActionDistributionChangeCount = distributionChangeCount(candidate.policyActionCounts, current.policyActionCounts);
+  const tacticalActionDistributionChangeCount = distributionChangeCount(candidate.tacticalActionCounts, current.tacticalActionCounts);
+  const finalActionDistributionChangeCount = distributionChangeCount(candidate.finalActionCounts, current.finalActionCounts);
+  const actionChangeDenominator = Math.max(candidate.decisions, current.decisions, 1);
+
+  return {
+    score: candidate.score - current.score,
+    goalDiff: candidate.goalDiff - current.goalDiff,
+    ballProgress: candidate.ballProgress - current.ballProgress,
+    goalsFor: candidate.goalsFor - current.goalsFor,
+    goalsAgainst: candidate.goalsAgainst - current.goalsAgainst,
+    winProxy: candidate.winProxy - current.winProxy,
+    decisions: candidate.decisions - current.decisions,
+    policyActionCounts,
+    tacticalActionCounts,
+    finalActionCounts,
+    policyActionDistributionChangeCount,
+    policyActionDistributionChangeRate: policyActionDistributionChangeCount / actionChangeDenominator,
+    tacticalActionDistributionChangeCount,
+    tacticalActionDistributionChangeRate: tacticalActionDistributionChangeCount / actionChangeDenominator,
+    finalActionDistributionChangeCount,
+    finalActionDistributionChangeRate: finalActionDistributionChangeCount / actionChangeDenominator,
+    tacticalRolloutUseRate: rate(candidate.tacticalRolloutUses, candidate.decisions) -
+      rate(current.tacticalRolloutUses, current.decisions),
+    tacticalRolloutChangeRate: rate(candidate.tacticalRolloutChanges, candidate.decisions) -
+      rate(current.tacticalRolloutChanges, current.decisions),
+    staminaConserveRate: rate(candidate.staminaConserves, candidate.decisions) -
+      rate(current.staminaConserves, current.decisions),
+    criticalStaminaRegulationRate: rate(candidate.criticalStaminaRegulations, candidate.decisions) -
+      rate(current.criticalStaminaRegulations, current.decisions),
+    flatPolicyRate: rate(candidate.flatPolicies, candidate.decisions) -
+      rate(current.flatPolicies, current.decisions),
+    averageStamina: candidate.averageStamina - current.averageStamina,
+    averageBallDistance: candidate.averageBallDistance - current.averageBallDistance,
+    averageBallSpeed: candidate.averageBallSpeed - current.averageBallSpeed,
+    averageFinishingPressure: candidate.averageFinishingPressure - current.averageFinishingPressure,
+    averageOwnGoalPressure: candidate.averageOwnGoalPressure - current.averageOwnGoalPressure,
+    averageSideWallPressure: candidate.averageSideWallPressure - current.averageSideWallPressure,
+    averageAttackCornerPressure: candidate.averageAttackCornerPressure - current.averageAttackCornerPressure,
+    averageOwnCornerPressure: candidate.averageOwnCornerPressure - current.averageOwnCornerPressure
   };
 }
 
@@ -360,6 +436,20 @@ function recordDecisionTrace(totals: RuntimeTraceTotals, trace: NeuralDecisionTr
 
 function safeAverage(total: number, count: number): number {
   return count > 0 ? total / count : 0;
+}
+
+function rate(count: number, total: number): number {
+  return total > 0 ? count / total : 0;
+}
+
+function subtractCounts(candidate: readonly number[], current: readonly number[]): number[] {
+  const length = Math.max(candidate.length, current.length);
+  return Array.from({ length }, (_, index) => (candidate[index] ?? 0) - (current[index] ?? 0));
+}
+
+function distributionChangeCount(candidate: readonly number[], current: readonly number[]): number {
+  return subtractCounts(candidate, current)
+    .reduce((total, count) => total + Math.abs(count), 0) / 2;
 }
 
 function createSeededInitialState(seed: number, match: number, team: Team): GameState {

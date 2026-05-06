@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { evaluatePolicyGate, evaluateRuntimePolicy, selectAcceptedPolicy, traceRuntimePolicy } from '../src/ai/policyGate';
+import {
+  compareRuntimeTraces,
+  evaluatePolicyGate,
+  evaluateRuntimePolicy,
+  selectAcceptedPolicy,
+  traceRuntimePolicy,
+  type RuntimeTraceSummary
+} from '../src/ai/policyGate';
 import { POLICY_ACTION_COUNT } from '../src/ai/policyActions';
 import { parseTraceRuntimePolicyArgs } from '../scripts/trace-runtime-policy';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
@@ -122,8 +129,71 @@ describe('policy adoption gate', () => {
     expect(options.seeds).toEqual([83, 97, 109, 127, 149]);
     expect(options.matches).toBe(4);
   });
+
+  it('compares runtime traces as behavior-visibility deltas', () => {
+    const current = traceSummary({
+      decisions: 100,
+      finalActionCounts: [50, 50, 0, 0, 0, 0, 0, 0, 0],
+      policyActionCounts: [40, 60, 0, 0, 0, 0, 0, 0, 0],
+      tacticalActionCounts: [45, 55, 0, 0, 0, 0, 0, 0, 0],
+      tacticalRolloutChanges: 20,
+      staminaConserves: 10,
+      criticalStaminaRegulations: 5
+    });
+    const candidate = traceSummary({
+      decisions: 100,
+      finalActionCounts: [40, 55, 5, 0, 0, 0, 0, 0, 0],
+      policyActionCounts: [35, 60, 5, 0, 0, 0, 0, 0, 0],
+      tacticalActionCounts: [35, 60, 5, 0, 0, 0, 0, 0, 0],
+      tacticalRolloutChanges: 30,
+      staminaConserves: 8,
+      criticalStaminaRegulations: 9
+    });
+
+    const delta = compareRuntimeTraces(candidate, current);
+
+    expect(delta.finalActionCounts).toEqual([-10, 5, 5, 0, 0, 0, 0, 0, 0]);
+    expect(delta.finalActionDistributionChangeCount).toBe(10);
+    expect(delta.finalActionDistributionChangeRate).toBe(0.1);
+    expect(delta.policyActionDistributionChangeCount).toBe(5);
+    expect(delta.tacticalActionDistributionChangeCount).toBe(10);
+    expect(delta.tacticalRolloutChangeRate).toBeCloseTo(0.1, 9);
+    expect(delta.staminaConserveRate).toBeCloseTo(-0.02, 9);
+    expect(delta.criticalStaminaRegulationRate).toBeCloseTo(0.04, 9);
+  });
 });
 
 function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
+}
+
+function traceSummary(overrides: Partial<RuntimeTraceSummary>): RuntimeTraceSummary {
+  const actionCounts = Array.from({ length: POLICY_ACTION_COUNT }, () => 0);
+  return {
+    score: 0,
+    goalDiff: 0,
+    ballProgress: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    winProxy: 0,
+    decisions: 0,
+    policyActionCounts: [...actionCounts],
+    tacticalActionCounts: [...actionCounts],
+    finalActionCounts: [...actionCounts],
+    tacticalRolloutUses: 0,
+    tacticalRolloutChanges: 0,
+    staminaConserves: 0,
+    criticalStaminaRegulations: 0,
+    flatPolicies: 0,
+    averageStamina: 0,
+    averageBallDistance: 0,
+    averageBallSpeed: 0,
+    averageFinishingPressure: 0,
+    averageOwnGoalPressure: 0,
+    averageSideWallPressure: 0,
+    averageAttackCornerPressure: 0,
+    averageOwnCornerPressure: 0,
+    seeds: [],
+    ...overrides
+  };
 }

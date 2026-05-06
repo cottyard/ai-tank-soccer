@@ -7,9 +7,13 @@ import {
   type PolicyGradientCliOptions
 } from './train-policy-gradient';
 import {
+  compareRuntimeTraces,
   evaluateRuntimePolicy,
+  traceRuntimePolicy,
   type RuntimeEvaluationOptions,
-  type RuntimeEvaluationResult
+  type RuntimeEvaluationResult,
+  type RuntimeTraceDelta,
+  type RuntimeTraceSummary
 } from '../src/ai/policyGate';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
 import type { PolicyGradientTrainingResult } from '../src/ai/policyGradientTraining';
@@ -20,6 +24,7 @@ declare const process: {
 };
 
 export type PolicyGradientSearchEvaluation = RuntimeEvaluationResult;
+export type PolicyGradientSearchTrace = RuntimeTraceSummary;
 
 export type PolicyGradientSearchVariant = {
   trainingSeed: number;
@@ -37,7 +42,14 @@ export type PolicyGradientSearchGate = {
   current: PolicyGradientSearchEvaluation;
   candidate: PolicyGradientSearchEvaluation;
   delta: PolicyGradientSearchEvaluation;
+  trace?: PolicyGradientSearchTraceGate;
   seeds: PolicyGradientSearchSeedResult[];
+};
+
+export type PolicyGradientSearchTraceGate = {
+  current: PolicyGradientSearchTrace;
+  candidate: PolicyGradientSearchTrace;
+  delta: RuntimeTraceDelta;
 };
 
 export type PolicyGradientSearchSeedResult = {
@@ -73,6 +85,7 @@ export type PolicyGradientSearchOptions = {
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
+  traceGate: boolean;
   standardSeeds: number[];
   holdoutSeeds: number[];
   training: PolicyGradientCliOptions;
@@ -104,6 +117,10 @@ export type PolicyGradientSearchResult = {
 type PolicyGradientSearchDependencies = {
   train?: (options: PolicyGradientCliOptions) => PolicyGradientTrainingResult;
   evaluate?: (weights: NeuralWeights, options: RuntimeEvaluationOptions) => PolicyGradientSearchEvaluation;
+  trace?: (
+    weights: NeuralWeights,
+    options: RuntimeEvaluationOptions & { seeds?: readonly number[] }
+  ) => PolicyGradientSearchTrace;
 };
 
 const DEFAULT_SEED = 2026050212;
@@ -155,6 +172,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
+    traceGate: argv.includes('--trace-gate'),
     standardSeeds: seedListArg(argv, '--standard-seeds', DEFAULT_STANDARD_SEEDS),
     holdoutSeeds: seedListArg(argv, '--holdout-seeds', DEFAULT_HOLDOUT_SEEDS),
     training: parseTrainingOptions(argv, seed, {
@@ -179,6 +197,7 @@ export function runPolicyGradientSearch(
 ): PolicyGradientSearchResult {
   const train = dependencies.train ?? runPolicyGradientCli;
   const evaluate = dependencies.evaluate ?? evaluateRuntimePolicy;
+  const trace = dependencies.trace ?? traceRuntimePolicy;
   const currentWeights = loadWeightsPayload(readFileSync(options.bestPath, 'utf8'));
   ensureDirectory(options.outputDir);
 
@@ -224,8 +243,8 @@ export function runPolicyGradientSearch(
       candidatePath,
       candidateMetricsPath,
       training,
-      standard: evaluateGate(currentWeights, candidateWeights, options.standardSeeds, options, evaluate),
-      holdout: evaluateGate(currentWeights, candidateWeights, options.holdoutSeeds, options, evaluate)
+      standard: evaluateGate(currentWeights, candidateWeights, options.standardSeeds, options, evaluate, trace),
+      holdout: evaluateGate(currentWeights, candidateWeights, options.holdoutSeeds, options, evaluate, trace)
     };
   }).sort((a, b) => compareRows(a, b))
     .map((row, index) => ({ ...row, rank: index + 1 }));
@@ -260,6 +279,9 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     console.log(`bestTrainingSeed=${result.best.variant.trainingSeed}`);
     console.log(`bestScoreDelta=${result.best.standard.delta.score.toFixed(3)}`);
     console.log(`bestHoldoutScoreDelta=${result.best.holdout.delta.score.toFixed(3)}`);
+    if (result.best.holdout.trace) {
+      console.log(`bestHoldoutFinalActionChangeRate=${result.best.holdout.trace.delta.finalActionDistributionChangeRate.toFixed(3)}`);
+    }
     console.log(`bestGoals=${result.best.standard.candidate.goalsFor}-${result.best.standard.candidate.goalsAgainst}`);
     console.log(`bestHoldoutGoals=${result.best.holdout.candidate.goalsFor}-${result.best.holdout.candidate.goalsAgainst}`);
     console.log(`bestLearningRate=${result.best.variant.learningRate}`);
@@ -348,7 +370,8 @@ function evaluateGate(
   candidateWeights: NeuralWeights,
   seeds: readonly number[],
   options: PolicyGradientSearchOptions,
-  evaluate: (weights: NeuralWeights, options: RuntimeEvaluationOptions) => PolicyGradientSearchEvaluation
+  evaluate: (weights: NeuralWeights, options: RuntimeEvaluationOptions) => PolicyGradientSearchEvaluation,
+  trace?: (weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => PolicyGradientSearchTrace
 ): PolicyGradientSearchGate {
   const seedResults = seeds.map((seed) => {
     const current = evaluate(currentWeights, {
@@ -375,7 +398,32 @@ function evaluateGate(
     current,
     candidate,
     delta: deltaEvaluation(candidate, current),
+    trace: options.traceGate ? evaluateTraceGate(currentWeights, candidateWeights, seeds, options, trace) : undefined,
     seeds: seedResults
+  };
+}
+
+function evaluateTraceGate(
+  currentWeights: NeuralWeights,
+  candidateWeights: NeuralWeights,
+  seeds: readonly number[],
+  options: PolicyGradientSearchOptions,
+  trace: ((weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => PolicyGradientSearchTrace) | undefined
+): PolicyGradientSearchTraceGate {
+  const traceRuntime = trace ?? (() => {
+    throw new Error('Trace gate requires a trace dependency or a runtime trace implementation');
+  });
+  const traceOptions = {
+    seeds,
+    matches: options.gateMatches,
+    frames: options.gateFrames
+  };
+  const current = traceRuntime(currentWeights, traceOptions);
+  const candidate = traceRuntime(candidateWeights, traceOptions);
+  return {
+    current,
+    candidate,
+    delta: compareRuntimeTraces(candidate, current)
   };
 }
 
@@ -430,14 +478,29 @@ function deltaEvaluation(
 
 function compareRows(a: PolicyGradientSearchRow, b: PolicyGradientSearchRow): number {
   return promotionSafeRank(b) - promotionSafeRank(a) ||
+    standardTraceSafetyRank(b) - standardTraceSafetyRank(a) ||
     b.holdout.delta.score - a.holdout.delta.score ||
     b.holdout.delta.goalDiff - a.holdout.delta.goalDiff ||
     b.holdout.delta.winProxy - a.holdout.delta.winProxy ||
     b.holdout.delta.ballProgress - a.holdout.delta.ballProgress ||
+    traceVisibilityRank(b.holdout) - traceVisibilityRank(a.holdout) ||
+    traceVisibilityRank(b.standard) - traceVisibilityRank(a.standard) ||
     b.standard.delta.score - a.standard.delta.score ||
     b.standard.delta.goalDiff - a.standard.delta.goalDiff ||
     b.standard.delta.winProxy - a.standard.delta.winProxy ||
     b.standard.delta.ballProgress - a.standard.delta.ballProgress;
+}
+
+function traceVisibilityRank(gate: PolicyGradientSearchGate): number {
+  return gate.trace?.delta.finalActionDistributionChangeRate ?? 0;
+}
+
+function standardTraceSafetyRank(row: PolicyGradientSearchRow): number {
+  const delta = row.standard.trace?.delta;
+  if (!delta) {
+    return 1;
+  }
+  return delta.staminaConserveRate <= 0 && delta.criticalStaminaRegulationRate <= 0 ? 1 : 0;
 }
 
 function promotionSafeRank(row: PolicyGradientSearchRow): number {
@@ -474,6 +537,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestHoldoutScoreDelta: result.best.holdout.delta.score,
     bestHoldoutGoalDelta: result.best.holdout.delta.goalDiff,
     bestHoldoutWinDelta: result.best.holdout.delta.winProxy,
+    bestStandardFinalActionChangeRate: result.best.standard.trace?.delta.finalActionDistributionChangeRate,
+    bestHoldoutFinalActionChangeRate: result.best.holdout.trace?.delta.finalActionDistributionChangeRate,
     bestLearningRate: result.best.variant.learningRate,
     bestEpochs: result.best.variant.epochs,
     bestPpoClip: result.best.variant.ppoClip,

@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import {
   parsePolicyGradientSearchArgs,
   runPolicyGradientSearch,
-  type PolicyGradientSearchEvaluation
+  type PolicyGradientSearchEvaluation,
+  type PolicyGradientSearchTrace
 } from '../scripts/search-policy-gradient';
+import type { RuntimeTraceSummary } from '../src/ai/policyGate';
 import { serializeWeightsPayload } from '../scripts/coach-neural';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 
@@ -484,6 +486,133 @@ describe('policy-gradient promotion search', () => {
     expect(result.best.candidatePath).toContain('seed103');
     expect(result.seed).toBe(37);
   });
+
+  it('can attach runtime behavior-visibility traces and prefer visible holdout changes after gate ties', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-trace-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--summary-output',
+        join(workdir, 'summary.json'),
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '47',
+        '--learning-rates',
+        '0.001,0.0005',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--trace-gate'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        const score = training.learningRate === 0.001 ? 12 : 11;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: identicalGateScore,
+      trace: actionVisibilityTrace
+    });
+
+    expect(result.best.variant.learningRate).toBe(0.001);
+    expect(result.best.holdout.trace?.delta.finalActionDistributionChangeCount).toBe(12);
+    expect(result.best.holdout.trace?.delta.finalActionDistributionChangeRate).toBe(0.12);
+    expect(result.rows[1].holdout.trace?.delta.finalActionDistributionChangeCount).toBe(0);
+
+    const summary = JSON.parse(readFileSync(result.summaryPath, 'utf8'));
+    expect(summary.rows[0].holdout.trace.delta).toMatchObject({
+      finalActionDistributionChangeCount: 12,
+      finalActionDistributionChangeRate: 0.12
+    });
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestHoldoutFinalActionChangeRate: 0.12,
+      bestStandardFinalActionChangeRate: 0.12
+    });
+  });
+
+  it('keeps candidates with higher standard stamina stops behind standard-trace-safe rows', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-trace-stamina-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '53',
+        '--learning-rates',
+        '0.001,0.0005',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--trace-gate'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        const score = training.learningRate === 0.001 ? 12 : 11;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: identicalGateScore,
+      trace: staminaRiskTrace
+    });
+
+    expect(result.best.variant.learningRate).toBe(0.0005);
+    expect(result.best.standard.trace?.delta.staminaConserveRate).toBe(0);
+    expect(result.rows[1]).toMatchObject({
+      variant: { learningRate: 0.001 },
+      standard: { trace: { delta: { staminaConserveRate: 0.2 } } },
+      holdout: { trace: { delta: { finalActionDistributionChangeRate: 0.12 } } }
+    });
+  });
 });
 
 function scoredWeights(score: number): number[] {
@@ -512,6 +641,82 @@ function scoreByFirstWeight(weights: readonly number[]): PolicyGradientSearchEva
     goalsFor: weights[0],
     goalsAgainst: 0,
     winProxy: weights[0] > 10 ? 0.75 : 0.5
+  };
+}
+
+function identicalGateScore(_weights: readonly number[]): PolicyGradientSearchEvaluation {
+  return scoreByFirstWeight(scoredWeights(10));
+}
+
+function actionVisibilityTrace(weights: readonly number[], options: { seeds?: readonly number[] }): PolicyGradientSearchTrace {
+  const current = traceFixture([50, 50, 0, 0, 0, 0, 0, 0, 0]);
+  const candidate = weights[0] === 12
+    ? traceFixture([38, 50, 12, 0, 0, 0, 0, 0, 0])
+    : traceFixture([50, 50, 0, 0, 0, 0, 0, 0, 0]);
+  return weights[0] === 10 ? current : {
+    ...candidate,
+    seeds: (options.seeds ?? []).map((seed) => traceSeedFixture(seed))
+  };
+}
+
+function staminaRiskTrace(weights: readonly number[], options: { seeds?: readonly number[] }): PolicyGradientSearchTrace {
+  const isHoldout = (options.seeds?.[0] ?? 0) >= 80;
+  const current = traceFixture([50, 50, 0, 0, 0, 0, 0, 0, 0]);
+  if (weights[0] !== 12) {
+    return current;
+  }
+
+  return {
+    ...traceFixture(isHoldout ? [38, 50, 12, 0, 0, 0, 0, 0, 0] : [50, 50, 0, 0, 0, 0, 0, 0, 0]),
+    staminaConserves: isHoldout ? 0 : 20
+  };
+}
+
+function traceFixture(finalActionCounts: readonly number[]): RuntimeTraceSummary {
+  const decisions = finalActionCounts.reduce((total, count) => total + count, 0);
+  return {
+    score: 0,
+    goalDiff: 0,
+    ballProgress: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    winProxy: 0,
+    decisions,
+    policyActionCounts: [...finalActionCounts],
+    tacticalActionCounts: [...finalActionCounts],
+    finalActionCounts: [...finalActionCounts],
+    tacticalRolloutUses: 0,
+    tacticalRolloutChanges: 0,
+    staminaConserves: 0,
+    criticalStaminaRegulations: 0,
+    flatPolicies: 0,
+    averageStamina: 0,
+    averageBallDistance: 0,
+    averageBallSpeed: 0,
+    averageFinishingPressure: 0,
+    averageOwnGoalPressure: 0,
+    averageSideWallPressure: 0,
+    averageAttackCornerPressure: 0,
+    averageOwnCornerPressure: 0,
+    seeds: []
+  };
+}
+
+function traceSeedFixture(seed: number): RuntimeTraceSummary['seeds'][number] {
+  return {
+    seed,
+    score: 0,
+    goalDiff: 0,
+    ballProgress: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    winProxy: 0,
+    decisions: 0,
+    tacticalRolloutUses: 0,
+    tacticalRolloutChanges: 0,
+    staminaConserves: 0,
+    criticalStaminaRegulations: 0,
+    flatPolicies: 0
   };
 }
 

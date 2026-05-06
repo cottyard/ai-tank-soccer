@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import { loadWeightsPayload } from './coach-neural';
-import { traceRuntimePolicy, type RuntimeTraceSummary } from '../src/ai/policyGate';
+import { compareRuntimeTraces, traceRuntimePolicy, type RuntimeTraceDelta, type RuntimeTraceSummary } from '../src/ai/policyGate';
 
 declare const process: {
   argv: string[];
@@ -50,7 +50,7 @@ export function runTraceRuntimePolicy(options: TraceRuntimePolicyOptions): Named
       generatedAt: new Date().toISOString(),
       options,
       traces,
-      delta: traces.length > 1 ? traceDelta(traces[1].trace, traces[0].trace) : undefined
+      delta: traces.length > 1 ? compareRuntimeTraces(traces[1].trace, traces[0].trace) : undefined
     }, null, 2)}\n`, 'utf8');
   }
   return traces;
@@ -63,7 +63,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       console.log(formatTrace(row));
     }
     if (traces.length > 1) {
-      console.log(formatDelta(traceDelta(traces[1].trace, traces[0].trace)));
+      console.log(formatDelta(compareRuntimeTraces(traces[1].trace, traces[0].trace)));
     }
   } catch (error) {
     process.exitCode = 1;
@@ -87,25 +87,6 @@ function traceNamedPolicy(
   };
 }
 
-function traceDelta(candidate: RuntimeTraceSummary, current: RuntimeTraceSummary): Record<string, unknown> {
-  return {
-    score: candidate.score - current.score,
-    goalsFor: candidate.goalsFor - current.goalsFor,
-    goalsAgainst: candidate.goalsAgainst - current.goalsAgainst,
-    winProxy: candidate.winProxy - current.winProxy,
-    ballProgress: candidate.ballProgress - current.ballProgress,
-    decisions: candidate.decisions - current.decisions,
-    tacticalRolloutChangeRate: rate(candidate.tacticalRolloutChanges, candidate.decisions) -
-      rate(current.tacticalRolloutChanges, current.decisions),
-    staminaConserveRate: rate(candidate.staminaConserves, candidate.decisions) -
-      rate(current.staminaConserves, current.decisions),
-    criticalStaminaRegulationRate: rate(candidate.criticalStaminaRegulations, candidate.decisions) -
-      rate(current.criticalStaminaRegulations, current.decisions),
-    finalActionCounts: candidate.finalActionCounts.map((count, index) => count - (current.finalActionCounts[index] ?? 0)),
-    policyActionCounts: candidate.policyActionCounts.map((count, index) => count - (current.policyActionCounts[index] ?? 0))
-  };
-}
-
 function formatTrace(row: NamedTrace): string {
   const trace = row.trace;
   return [
@@ -123,7 +104,7 @@ function formatTrace(row: NamedTrace): string {
   ].join(' ');
 }
 
-function formatDelta(delta: Record<string, unknown>): string {
+function formatDelta(delta: RuntimeTraceDelta): string {
   return [
     'delta:',
     `score=${formatNumber(delta.score)}`,
@@ -134,7 +115,8 @@ function formatDelta(delta: Record<string, unknown>): string {
     `rolloutChangeRate=${formatNumber(delta.tacticalRolloutChangeRate)}`,
     `staminaStopRate=${formatNumber(delta.staminaConserveRate)}`,
     `criticalRegRate=${formatNumber(delta.criticalStaminaRegulationRate)}`,
-    `finalActionDelta=${Array.isArray(delta.finalActionCounts) ? delta.finalActionCounts.join(',') : ''}`
+    `finalActionChangeRate=${formatNumber(delta.finalActionDistributionChangeRate)}`,
+    `finalActionDelta=${delta.finalActionCounts.join(',')}`
   ].join(' ');
 }
 
