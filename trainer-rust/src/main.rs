@@ -144,6 +144,7 @@ struct Options {
     open_start_ratio: Option<f64>,
     advantage_baseline: AdvantageBaseline,
     action_mode: ActionMode,
+    runtime_survivors_only: bool,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -207,17 +208,22 @@ struct Command {
 #[derive(Clone)]
 struct PendingDecision {
     inputs: [f64; INPUT_COUNT],
+    sampled_action: usize,
     action: usize,
     team: Team,
     frame: usize,
     probability: f64,
     trainable: bool,
     start_state_mode: ActualStartStateMode,
+    tactical_changed: bool,
+    stamina_conserved: bool,
+    critical_regulated: bool,
 }
 
 struct Collection {
     samples: Vec<Sample>,
     decisions: usize,
+    policy_action_survival: PolicyActionSurvival,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -231,6 +237,7 @@ struct TrainingResult {
     trained_samples: usize,
     samples: usize,
     decisions: usize,
+    policy_action_survival: PolicyActionSurvival,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -239,6 +246,7 @@ struct TrainingResult {
     advantage_baseline: AdvantageBaseline,
     open_start_ratio: Option<f64>,
     action_mode: ActionMode,
+    runtime_survivors_only: bool,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -257,6 +265,24 @@ struct StartFamilyCounts {
     own_goal_defense: usize,
     corner_fight: usize,
     loose_ball_contest: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PolicyActionSurvival {
+    sampled: usize,
+    survived: usize,
+    changed: usize,
+    tactical_changed: usize,
+    stamina_conserved: usize,
+    critical_regulated: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeActionResult {
+    action: usize,
+    tactical_changed: bool,
+    stamina_conserved: bool,
+    critical_regulated: bool,
 }
 
 fn main() {
@@ -339,6 +365,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         open_start_ratio: None,
         advantage_baseline: AdvantageBaseline::Global,
         action_mode: ActionMode::Raw,
+        runtime_survivors_only: false,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -410,6 +437,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                     _ => return Err(format!("Unknown action mode: {value}").into()),
                 }
             }
+            "--runtime-survivors-only" => {
+                options.runtime_survivors_only = parse_bool_arg(&value, "--runtime-survivors-only")?
+            }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
                     "self" | "self-play" => OpponentMode::SelfPlay,
@@ -425,6 +455,14 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         return Err("Usage: soccer-policy-trainer --weights weights.json --output out.json".into());
     }
     Ok(options)
+}
+
+fn parse_bool_arg(value: &str, name: &str) -> Result<bool, Box<dyn Error>> {
+    match value {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(format!("Expected boolean value for {name}, received {value}").into()),
+    }
 }
 
 fn load_weights(path: &str) -> Result<Vec<f64>, Box<dyn Error>> {
@@ -538,6 +576,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         trained_samples,
         samples: collection.samples.len(),
         decisions: collection.decisions,
+        policy_action_survival: collection.policy_action_survival,
         start_families: collection.start_families,
         frames: collection.frames,
         red_goals: collection.red_goals,
@@ -546,6 +585,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         advantage_baseline: options.advantage_baseline,
         open_start_ratio: options.open_start_ratio,
         action_mode: options.action_mode,
+        runtime_survivors_only: options.runtime_survivors_only,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -721,12 +761,16 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     }
 
     let decision_count = all_decisions.len();
+    let policy_action_survival = summarize_policy_action_survival(&all_decisions);
     let advantages = normalized_advantages(&all_decisions, options.advantage_baseline);
     let samples = all_decisions
         .into_iter()
         .zip(advantages)
         .filter_map(|((decision, _), advantage)| {
             if !decision.trainable {
+                return None;
+            }
+            if options.runtime_survivors_only && decision.sampled_action != decision.action {
                 return None;
             }
             Some(Sample {
@@ -742,12 +786,41 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     Collection {
         samples,
         decisions: decision_count,
+        policy_action_survival,
         start_families,
         frames: completed_frames,
         red_goals,
         blue_goals,
         final_state,
     }
+}
+
+fn summarize_policy_action_survival(decisions: &[(PendingDecision, f64)]) -> PolicyActionSurvival {
+    let mut summary = PolicyActionSurvival {
+        sampled: 0,
+        survived: 0,
+        changed: 0,
+        tactical_changed: 0,
+        stamina_conserved: 0,
+        critical_regulated: 0,
+    };
+
+    for (decision, _) in decisions {
+        if !decision.trainable {
+            continue;
+        }
+        summary.sampled += 1;
+        if decision.sampled_action == decision.action {
+            summary.survived += 1;
+        } else {
+            summary.changed += 1;
+        }
+        summary.tactical_changed += usize::from(decision.tactical_changed);
+        summary.stamina_conserved += usize::from(decision.stamina_conserved);
+        summary.critical_regulated += usize::from(decision.critical_regulated);
+    }
+
+    summary
 }
 
 fn load_league_opponents(weights: &[f64], options: &Options) -> Vec<LeagueOpponent> {
@@ -976,49 +1049,72 @@ fn sample_team_decision(
     }
     let probabilities = softmax(&logits);
     let sampled_action = sample_action(&probabilities, random);
-    let executed_action = match action_mode {
-        ActionMode::Raw => sampled_action,
-        ActionMode::Runtime => runtime_action_index(state, team, tank, sampled_action),
+    let runtime_result = match action_mode {
+        ActionMode::Raw => RuntimeActionResult {
+            action: sampled_action,
+            tactical_changed: false,
+            stamina_conserved: false,
+            critical_regulated: false,
+        },
+        ActionMode::Runtime => runtime_action_result(state, team, tank, sampled_action),
     };
+    let executed_action = runtime_result.action;
     let probability = probabilities[executed_action].max(1e-9);
 
     (
         action_index_to_command(executed_action),
         Some(PendingDecision {
             inputs,
+            sampled_action,
             action: executed_action,
             team,
             frame: state.frame,
             probability,
             trainable,
             start_state_mode,
+            tactical_changed: runtime_result.tactical_changed,
+            stamina_conserved: runtime_result.stamina_conserved,
+            critical_regulated: runtime_result.critical_regulated,
         }),
     )
 }
 
-fn runtime_action_index(
+fn runtime_action_result(
     state: &GameState,
     team: Team,
     tank: &Tank,
     policy_action: usize,
-) -> usize {
+) -> RuntimeActionResult {
     let pressures = pressure_signals(state, team);
     if should_conserve_stamina(state, team, tank, pressures) {
-        return 4;
+        return RuntimeActionResult {
+            action: 4,
+            tactical_changed: false,
+            stamina_conserved: true,
+            critical_regulated: false,
+        };
     }
 
     let mut action = policy_action;
+    let mut tactical_changed = false;
     if should_use_tactical_rollout(state, team, tank, pressures) {
         action = choose_tactical_action(state, team, policy_action);
+        tactical_changed = action != policy_action;
     }
 
-    command_to_action_index(regulate_critical_stamina_command(
+    let regulated_action = command_to_action_index(regulate_critical_stamina_command(
         state,
         team,
         tank,
         pressures,
         action_index_to_command(action),
-    ))
+    ));
+    RuntimeActionResult {
+        action: regulated_action,
+        tactical_changed,
+        stamina_conserved: false,
+        critical_regulated: regulated_action != action,
+    }
 }
 
 fn should_conserve_stamina(
@@ -3267,6 +3363,10 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             }
         ));
         output.push_str(&format!(
+            ",\n    \"runtimeSurvivorsOnly\": {}",
+            options.runtime_survivors_only
+        ));
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3306,10 +3406,20 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"advantageBaseline\": \"{}\",\n",
             "  \"openStartRatio\": {},\n",
             "  \"actionMode\": \"{}\",\n",
+            "  \"runtimeSurvivorsOnly\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
             "  \"leagueTraditionalWeight\": {},\n",
+            "  \"policyActionSurvival\": {{\n",
+            "    \"sampled\": {},\n",
+            "    \"survived\": {},\n",
+            "    \"changed\": {},\n",
+            "    \"tacticalChanged\": {},\n",
+            "    \"staminaConserved\": {},\n",
+            "    \"criticalRegulated\": {},\n",
+            "    \"survivalRate\": {:.17}\n",
+            "  }},\n",
             "  \"startFamilies\": {{\n",
             "    \"open\": {},\n",
             "    \"outcomeCurriculum\": {},\n",
@@ -3338,6 +3448,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             ActionMode::Raw => "raw",
             ActionMode::Runtime => "runtime",
         },
+        result.runtime_survivors_only,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",
@@ -3346,6 +3457,13 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.league_opponent_count,
         result.league_current_weight,
         result.league_traditional_weight,
+        result.policy_action_survival.sampled,
+        result.policy_action_survival.survived,
+        result.policy_action_survival.changed,
+        result.policy_action_survival.tactical_changed,
+        result.policy_action_survival.stamina_conserved,
+        result.policy_action_survival.critical_regulated,
+        policy_action_survival_rate(result.policy_action_survival),
         result.start_families.open,
         result.start_families.outcome_curriculum,
         result.start_families.own_goal_defense,
@@ -3355,6 +3473,14 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.final_state.ball.position.x,
         result.final_state.ball.position.y
     )
+}
+
+fn policy_action_survival_rate(summary: PolicyActionSurvival) -> f64 {
+    if summary.sampled == 0 {
+        0.0
+    } else {
+        summary.survived as f64 / summary.sampled as f64
+    }
 }
 
 fn optional_number_json(value: Option<f64>) -> String {

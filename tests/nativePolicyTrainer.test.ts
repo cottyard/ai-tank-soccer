@@ -248,6 +248,15 @@ describe('native policy trainer', () => {
       actionMode?: string;
       opponentMode?: string;
       startFamilies?: Record<string, number>;
+      policyActionSurvival?: {
+        sampled: number;
+        survived: number;
+        changed: number;
+        tacticalChanged: number;
+        staminaConserved: number;
+        criticalRegulated: number;
+        survivalRate: number;
+      };
     };
     expect(nativeMetrics.advantageBaseline).toBe('learned');
     expect(nativeMetrics.openStartRatio).toBe(0.25);
@@ -260,6 +269,15 @@ describe('native policy trainer', () => {
       cornerFight: 1,
       looseBallContest: 0
     });
+    expect(nativeMetrics.policyActionSurvival).toBeDefined();
+    const survival = nativeMetrics.policyActionSurvival!;
+    expect(survival).toMatchObject({
+      sampled: survival.survived + survival.changed,
+      survivalRate: expect.any(Number)
+    });
+    expect(survival.sampled).toBeGreaterThan(0);
+    expect(survival.survivalRate).toBeGreaterThanOrEqual(0);
+    expect(survival.survivalRate).toBeLessThanOrEqual(1);
   });
 
   (cargoPath ? it : it.skip)('supports frozen opponent weights for Rust PPO self-play', () => {
@@ -319,6 +337,72 @@ describe('native policy trainer', () => {
 
     expect(metrics.decisions).toBeGreaterThan(metrics.samples);
     expect(metrics.samples).toBe(metrics.decisions / 2);
+  });
+
+  (cargoPath ? it : it.skip)('can train only runtime samples whose policy action survives the wrapper', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-survivors-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const outputWeights = join(workdir, 'trained.json');
+    const metricsOutput = join(workdir, 'metrics.json');
+    const targetDir = join(workdir, 'target');
+    const weights = defaultNeuralWeights();
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      '--native',
+      '--native-bin',
+      join(targetDir, 'release', 'soccer-policy-trainer.exe'),
+      '--input',
+      inputWeights,
+      '--output',
+      outputWeights,
+      '--metrics-output',
+      metricsOutput,
+      '--seed',
+      '93',
+      '--matches',
+      '8',
+      '--frames',
+      '60',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '8',
+      '--action-mode',
+      'runtime',
+      '--runtime-survivors-only'
+    ]));
+
+    const metrics = JSON.parse(readFileSync(metricsOutput, 'utf8')) as {
+      runtimeSurvivorsOnly?: boolean;
+      samples: number;
+      policyActionSurvival?: {
+        sampled: number;
+        survived: number;
+        changed: number;
+      };
+    };
+
+    expect(metrics.runtimeSurvivorsOnly).toBe(true);
+    expect(metrics.policyActionSurvival?.sampled).toBeGreaterThan(0);
+    expect(metrics.policyActionSurvival?.changed).toBeGreaterThan(0);
+    expect(metrics.samples).toBe(metrics.policyActionSurvival?.survived);
+    expect(metrics.samples).toBeLessThan(metrics.policyActionSurvival?.sampled ?? 0);
   });
 
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {

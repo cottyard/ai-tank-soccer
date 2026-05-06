@@ -53,6 +53,7 @@ describe('policy-gradient promotion search', () => {
       '0.25,0.5',
       '--advantage-baselines',
       'start-team-time,learned',
+      '--runtime-survivors-only',
       '--opponent-modes',
       'self,league'
     ]);
@@ -72,6 +73,7 @@ describe('policy-gradient promotion search', () => {
       training: {
         advantageBaseline: 'start-team-time',
         startStateMode: 'mixed',
+        runtimeSurvivorsOnly: true,
         opponentMode: 'self'
       },
       grid: {

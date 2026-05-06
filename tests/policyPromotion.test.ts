@@ -67,6 +67,7 @@ describe('policy-gradient promotion loop', () => {
         startStateMode: 'mixed',
         advantageBaseline: 'learned',
         actionMode: 'runtime',
+        runtimeSurvivorsOnly: false,
         opponentMode: 'league',
         leagueCurrentWeight: 1,
         leagueTraditionalWeight: 0.15
@@ -330,6 +331,7 @@ describe('policy-gradient promotion loop', () => {
         startStateMode: 'corner-fight',
         advantageBaseline: 'start-team-time',
         actionMode: 'runtime',
+        runtimeSurvivorsOnly: true,
         opponentMode: 'self',
         trainer: 'rust-policy-gradient'
       }
@@ -369,6 +371,7 @@ describe('policy-gradient promotion loop', () => {
       discount: 0.995,
       startStateMode: 'corner-fight',
       advantageBaseline: 'start-team-time',
+      runtimeSurvivorsOnly: true,
       opponentMode: 'self'
     });
     expect(JSON.parse(readFileSync(bestPath, 'utf8'))).toMatchObject({ weights: candidate });

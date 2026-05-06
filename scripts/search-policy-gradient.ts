@@ -82,6 +82,7 @@ export type PolicyGradientSearchOptions = {
   startStateMode: string;
   advantageBaseline: string;
   actionMode: string;
+  runtimeSurvivorsOnly: boolean;
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
@@ -153,6 +154,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const batchSize = positiveIntegerArg(argv, '--batch-size', 192);
   const discount = numberArg(argv, '--discount', 0.996);
   const actionMode = stringArg(argv, '--action-mode') ?? 'runtime';
+  const runtimeSurvivorsOnly = argv.includes('--runtime-survivors-only');
   const bestPath = stringArg(argv, '--best') ?? 'public/models/neural-best.json';
   const outputDir = stringArg(argv, '--output-dir') ?? `training-runs/policy-gradient-search-s${seed}`;
 
@@ -169,6 +171,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     startStateMode,
     advantageBaseline,
     actionMode,
+    runtimeSurvivorsOnly,
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
@@ -184,6 +187,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       startStateMode,
       advantageBaseline,
       actionMode,
+      runtimeSurvivorsOnly,
       opponentMode
     }),
     grid,
@@ -311,6 +315,7 @@ function parseTrainingOptions(
     startStateMode: string;
     advantageBaseline: string;
     actionMode: string;
+    runtimeSurvivorsOnly: boolean;
     opponentMode: string;
   }
 ): PolicyGradientCliOptions {
@@ -342,6 +347,7 @@ function parseTrainingOptions(
     base.advantageBaseline,
     '--action-mode',
     base.actionMode,
+    ...(base.runtimeSurvivorsOnly ? ['--runtime-survivors-only'] : []),
     '--opponent-mode',
     base.opponentMode,
     '--league-current-weight',

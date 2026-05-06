@@ -40,6 +40,7 @@ describe('policy-gradient CLI trainer', () => {
       'learned',
       '--action-mode',
       'runtime',
+      '--runtime-survivors-only',
       '--opponent-mode',
       'traditional',
       '--native',
@@ -64,6 +65,7 @@ describe('policy-gradient CLI trainer', () => {
       openStartRatio: 0.35,
       advantageBaseline: 'learned',
       actionMode: 'runtime',
+      runtimeSurvivorsOnly: true,
       opponentMode: 'traditional',
       native: true,
       nativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe'

@@ -254,6 +254,7 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     stringArg(argv, '--advantage-baseline') ?? 'learned',
     '--action-mode',
     stringArg(argv, '--action-mode') ?? 'runtime',
+    ...(argv.includes('--runtime-survivors-only') ? ['--runtime-survivors-only'] : []),
     '--opponent-mode',
     stringArg(argv, '--opponent-mode') ?? 'league',
     '--league-current-weight',
@@ -451,6 +452,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     startStateMode: result.training.startStateMode,
     openStartRatio: result.training.openStartRatio,
     actionMode: result.training.actionMode,
+    runtimeSurvivorsOnly: result.training.runtimeSurvivorsOnly,
     matches: result.training.matches,
     frames: result.training.frames,
     epochs: result.training.epochs,
@@ -490,6 +492,7 @@ function trainingFromCandidateMetadata(
     startStateMode: startStateModeMetadata(metadata, fallback.startStateMode),
     advantageBaseline: advantageBaselineMetadata(metadata, fallback.advantageBaseline),
     actionMode: actionModeMetadata(metadata, fallback.actionMode),
+    runtimeSurvivorsOnly: booleanMetadata(metadata, 'runtimeSurvivorsOnly', fallback.runtimeSurvivorsOnly),
     opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
   };
 }
@@ -515,6 +518,15 @@ function optionalFiniteMetadataNumber(
 ): number | undefined {
   const value = metadata[field];
   return typeof value === 'number' && Number.isFinite(value) ? clamp01(value) : fallback;
+}
+
+function booleanMetadata(
+  metadata: Record<string, unknown>,
+  field: string,
+  fallback: boolean
+): boolean {
+  const value = metadata[field];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function startStateModeMetadata(

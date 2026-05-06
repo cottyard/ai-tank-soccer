@@ -36,6 +36,7 @@ export type PolicyGradientCliOptions = {
   openStartRatio?: number;
   advantageBaseline: PolicyGradientAdvantageBaseline;
   actionMode: 'raw' | 'runtime';
+  runtimeSurvivorsOnly: boolean;
   opponentMode: 'self' | 'traditional' | 'league';
   leagueOpponentWeights: string[];
   leagueCurrentWeight: number;
@@ -58,6 +59,7 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   openStartRatio: undefined,
   advantageBaseline: 'global',
   actionMode: 'raw',
+  runtimeSurvivorsOnly: false,
   opponentMode: 'self',
   leagueOpponentWeights: [],
   leagueCurrentWeight: 1,
@@ -83,6 +85,7 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     openStartRatio: optionalClamp01Arg(argv, '--open-start-ratio'),
     advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
     actionMode: actionModeArg(argv, '--action-mode', DEFAULT_OPTIONS.actionMode),
+    runtimeSurvivorsOnly: argv.includes('--runtime-survivors-only'),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
     leagueOpponentWeights: stringArgs(argv, '--league-opponent-weights'),
     leagueCurrentWeight: Math.max(0, numberArg(argv, '--league-current-weight', DEFAULT_OPTIONS.leagueCurrentWeight)),
@@ -186,6 +189,8 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     options.advantageBaseline,
     '--action-mode',
     options.actionMode,
+    '--runtime-survivors-only',
+    String(options.runtimeSurvivorsOnly),
     '--opponent-mode',
     options.opponentMode,
     '--league-current-weight',
