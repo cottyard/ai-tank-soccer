@@ -39,6 +39,7 @@ export type PolicyGradientCliOptions = {
   runtimeSurvivorsOnly: boolean;
   runtimeWrapperWeightMode: 'none' | 'tactical-downweight';
   runtimeTacticalRewriteWeight: number;
+  actionRetentionWeight: number;
   opponentMode: 'self' | 'traditional' | 'league';
   leagueOpponentWeights: string[];
   leagueCurrentWeight: number;
@@ -64,6 +65,7 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   runtimeSurvivorsOnly: false,
   runtimeWrapperWeightMode: 'none',
   runtimeTacticalRewriteWeight: 0.5,
+  actionRetentionWeight: 0,
   opponentMode: 'self',
   leagueOpponentWeights: [],
   leagueCurrentWeight: 1,
@@ -92,6 +94,7 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     runtimeSurvivorsOnly: argv.includes('--runtime-survivors-only'),
     runtimeWrapperWeightMode: runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', DEFAULT_OPTIONS.runtimeWrapperWeightMode),
     runtimeTacticalRewriteWeight: clamp01(numberArg(argv, '--runtime-tactical-rewrite-weight', DEFAULT_OPTIONS.runtimeTacticalRewriteWeight)),
+    actionRetentionWeight: Math.max(0, numberArg(argv, '--action-retention-weight', DEFAULT_OPTIONS.actionRetentionWeight)),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
     leagueOpponentWeights: stringArgs(argv, '--league-opponent-weights'),
     leagueCurrentWeight: Math.max(0, numberArg(argv, '--league-current-weight', DEFAULT_OPTIONS.leagueCurrentWeight)),
@@ -201,6 +204,8 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     options.runtimeWrapperWeightMode,
     '--runtime-tactical-rewrite-weight',
     String(options.runtimeTacticalRewriteWeight),
+    '--action-retention-weight',
+    String(options.actionRetentionWeight),
     '--opponent-mode',
     options.opponentMode,
     '--league-current-weight',

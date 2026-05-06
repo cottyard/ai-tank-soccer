@@ -60,6 +60,8 @@ describe('policy-gradient promotion search', () => {
       'none,runtime-survivors-only,tactical-downweight',
       '--runtime-tactical-rewrite-weights',
       '0.5,0.2',
+      '--action-retention-weights',
+      '0,0.25',
       '--opponent-modes',
       'self,league'
     ]);
@@ -94,10 +96,85 @@ describe('policy-gradient promotion search', () => {
         advantageBaselines: ['start-team-time', 'learned'],
         runtimeWrapperModes: ['none', 'runtime-survivors-only', 'tactical-downweight'],
         runtimeTacticalRewriteWeights: [0.5, 0.2],
+        actionRetentionWeights: [0, 0.25],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(768);
+    expect(options.variants).toHaveLength(1536);
+  });
+
+  it('searches action-retention weights as a conservative policy-change dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-retention-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      actionRetentionWeight: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '67',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--action-retention-weights',
+        '0,0.25'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          actionRetentionWeight: training.actionRetentionWeight,
+          output: training.output
+        });
+        const score = 10 + training.actionRetentionWeight;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(2);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ actionRetentionWeight: 0 }),
+      expect.objectContaining({ actionRetentionWeight: 0.25 })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-retain0.json'),
+      expect.stringContaining('-retain0p25.json')
+    ]);
+    expect(result.best.variant.actionRetentionWeight).toBe(0.25);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestActionRetentionWeight: 0.25
+    });
   });
 
   it('searches runtime wrapper handling modes as a variant dimension', () => {

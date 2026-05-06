@@ -67,6 +67,7 @@ struct Sample {
     weight: f64,
     advantage: f64,
     old_probability: Option<f64>,
+    old_probabilities: Option<[f64; OUTPUT_COUNT]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -154,6 +155,7 @@ struct Options {
     runtime_survivors_only: bool,
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
     runtime_tactical_rewrite_weight: f64,
+    action_retention_weight: f64,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -222,6 +224,7 @@ struct PendingDecision {
     team: Team,
     frame: usize,
     probability: f64,
+    probabilities: [f64; OUTPUT_COUNT],
     trainable: bool,
     start_state_mode: ActualStartStateMode,
     tactical_changed: bool,
@@ -260,6 +263,7 @@ struct TrainingResult {
     runtime_survivors_only: bool,
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
     runtime_tactical_rewrite_weight: f64,
+    action_retention_weight: f64,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -402,6 +406,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         runtime_survivors_only: false,
         runtime_wrapper_weight_mode: RuntimeWrapperWeightMode::None,
         runtime_tactical_rewrite_weight: 0.5,
+        action_retention_weight: 0.0,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -485,6 +490,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
             }
             "--runtime-tactical-rewrite-weight" => {
                 options.runtime_tactical_rewrite_weight = clamp01(value.parse::<f64>()?)
+            }
+            "--action-retention-weight" => {
+                options.action_retention_weight = value.parse::<f64>()?.max(0.0)
             }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
@@ -571,6 +579,7 @@ fn load_samples(path: &str) -> Result<Vec<Sample>, Box<dyn Error>> {
             weight: parse_number_field(object, "\"weight\"", 1.0).max(0.0),
             advantage,
             old_probability,
+            old_probabilities: None,
         });
         cursor = object_end + 1;
     }
@@ -635,6 +644,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         runtime_survivors_only: options.runtime_survivors_only,
         runtime_wrapper_weight_mode: options.runtime_wrapper_weight_mode,
         runtime_tactical_rewrite_weight: options.runtime_tactical_rewrite_weight,
+        action_retention_weight: options.action_retention_weight,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -834,6 +844,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                 weight: advantage.abs() * wrapper_weight,
                 advantage,
                 old_probability: Some(decision.probability),
+                old_probabilities: Some(decision.probabilities),
             })
         })
         .collect();
@@ -1123,12 +1134,29 @@ fn train_batch(
             total_loss += -probs[sample.action].max(1e-12).ln() * sample_weight;
             sample_weight
         };
+        let retention_weight = if policy_gradient {
+            options.action_retention_weight * sample_weight
+        } else {
+            0.0
+        };
+        let old_probabilities = if retention_weight > 0.0 {
+            sample.old_probabilities.as_ref()
+        } else {
+            None
+        };
+        if let Some(old_probs) = old_probabilities {
+            total_loss += retention_weight * kl_divergence(old_probs, &probs);
+        }
         total_weight += sample_weight;
         d2.fill(0.0);
         d1.fill(0.0);
 
         for out in 0..OUTPUT_COUNT {
-            let delta = (probs[out] - if out == sample.action { 1.0 } else { 0.0 }) * scale;
+            let retention_delta = old_probabilities
+                .map(|old_probs| retention_weight * (probs[out] - old_probs[out]))
+                .unwrap_or(0.0);
+            let delta = (probs[out] - if out == sample.action { 1.0 } else { 0.0 }) * scale
+                + retention_delta;
             let row = layer2_offset() + out * (HIDDEN2 + 1);
             for input in 0..HIDDEN2 {
                 gradient[row + input] += delta * h2[input];
@@ -1165,6 +1193,15 @@ fn train_batch(
     }
 
     total_loss / divisor
+}
+
+fn kl_divergence(old_probs: &[f64; OUTPUT_COUNT], probs: &[f64; OUTPUT_COUNT]) -> f64 {
+    let mut total = 0.0;
+    for out in 0..OUTPUT_COUNT {
+        let old = old_probs[out].max(1e-12);
+        total += old * (old.ln() - probs[out].max(1e-12).ln());
+    }
+    total
 }
 
 fn sample_team_decision(
@@ -1210,6 +1247,7 @@ fn sample_team_decision(
             team,
             frame: state.frame,
             probability,
+            probabilities,
             trainable,
             start_state_mode,
             tactical_changed: runtime_result.tactical_changed,
@@ -3515,6 +3553,10 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             options.runtime_tactical_rewrite_weight
         ));
         output.push_str(&format!(
+            ",\n    \"actionRetentionWeight\": {}",
+            options.action_retention_weight
+        ));
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3557,6 +3599,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"runtimeSurvivorsOnly\": {},\n",
             "  \"runtimeWrapperWeightMode\": \"{}\",\n",
             "  \"runtimeTacticalRewriteWeight\": {},\n",
+            "  \"actionRetentionWeight\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
@@ -3608,6 +3651,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.runtime_survivors_only,
         runtime_wrapper_weight_mode_name(result.runtime_wrapper_weight_mode),
         result.runtime_tactical_rewrite_weight,
+        result.action_retention_weight,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",

@@ -522,6 +522,86 @@ describe('native policy trainer', () => {
     expect(totalDelta(weightedOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
   });
 
+  (cargoPath ? it : it.skip)('can apply an action-retention penalty during Rust PPO updates', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-retention-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const defaultOutputWeights = join(workdir, 'default-trained.json');
+    const defaultMetricsOutput = join(workdir, 'default-metrics.json');
+    const retainedOutputWeights = join(workdir, 'retained-trained.json');
+    const retainedMetricsOutput = join(workdir, 'retained-metrics.json');
+    const targetDir = join(workdir, 'target');
+    const weights = defaultNeuralWeights();
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    const nativeBin = join(targetDir, 'release', 'soccer-policy-trainer.exe');
+    const baseArgs = [
+      '--native',
+      '--native-bin',
+      nativeBin,
+      '--input',
+      inputWeights,
+      '--seed',
+      '96',
+      '--matches',
+      '8',
+      '--frames',
+      '60',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '8',
+      '--action-mode',
+      'runtime'
+    ];
+
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      defaultOutputWeights,
+      '--metrics-output',
+      defaultMetricsOutput
+    ]));
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      retainedOutputWeights,
+      '--metrics-output',
+      retainedMetricsOutput,
+      '--action-retention-weight',
+      '0.4'
+    ]));
+
+    const retainedMetrics = JSON.parse(readFileSync(retainedMetricsOutput, 'utf8')) as {
+      actionRetentionWeight?: number;
+      samples: number;
+    };
+    const retainedOutput = JSON.parse(readFileSync(retainedOutputWeights, 'utf8')) as {
+      metadata?: { actionRetentionWeight?: number };
+      weights: number[];
+    };
+    const defaultOutput = JSON.parse(readFileSync(defaultOutputWeights, 'utf8')) as { weights: number[] };
+
+    expect(retainedMetrics.actionRetentionWeight).toBe(0.4);
+    expect(retainedMetrics.samples).toBeGreaterThan(0);
+    expect(retainedOutput.metadata?.actionRetentionWeight).toBe(0.4);
+    expect(totalDelta(retainedOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
+  });
+
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {
     const root = process.cwd();
     const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-league-'));
