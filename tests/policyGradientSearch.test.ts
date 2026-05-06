@@ -56,6 +56,8 @@ describe('policy-gradient promotion search', () => {
       '--runtime-survivors-only',
       '--runtime-wrapper-weight-mode',
       'tactical-downweight',
+      '--runtime-wrapper-modes',
+      'none,runtime-survivors-only,tactical-downweight',
       '--opponent-modes',
       'self,league'
     ]);
@@ -88,10 +90,95 @@ describe('policy-gradient promotion search', () => {
         startStateModes: ['mixed', 'open'],
         openStartRatios: [0.25, 0.5],
         advantageBaselines: ['start-team-time', 'learned'],
+        runtimeWrapperModes: ['none', 'runtime-survivors-only', 'tactical-downweight'],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(192);
+    expect(options.variants).toHaveLength(576);
+  });
+
+  it('searches runtime wrapper handling modes as a variant dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-wrapper-modes-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      runtimeSurvivorsOnly: boolean;
+      runtimeWrapperWeightMode: string;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '59',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--runtime-wrapper-modes',
+        'none,runtime-survivors-only,tactical-downweight'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          runtimeSurvivorsOnly: training.runtimeSurvivorsOnly,
+          runtimeWrapperWeightMode: training.runtimeWrapperWeightMode,
+          output: training.output
+        });
+        const score = training.runtimeSurvivorsOnly
+          ? 12
+          : training.runtimeWrapperWeightMode === 'tactical-downweight'
+            ? 11
+            : 10;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(3);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ runtimeSurvivorsOnly: false, runtimeWrapperWeightMode: 'none' }),
+      expect.objectContaining({ runtimeSurvivorsOnly: true, runtimeWrapperWeightMode: 'none' }),
+      expect.objectContaining({ runtimeSurvivorsOnly: false, runtimeWrapperWeightMode: 'tactical-downweight' })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-wrapnone.json'),
+      expect.stringContaining('-wrapsurvivors.json'),
+      expect.stringContaining('-wraptactical-downweight.json')
+    ]);
+    expect(result.best.variant.runtimeWrapperMode).toBe('runtime-survivors-only');
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestRuntimeWrapperMode: 'runtime-survivors-only',
+      runtimeSurvivorsOnly: true,
+      runtimeWrapperWeightMode: 'none'
+    });
   });
 
   it('trains each variant, ranks promotion-safe candidates by holdout-gate delta, and writes summary history without promoting', () => {

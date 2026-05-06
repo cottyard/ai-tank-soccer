@@ -35,8 +35,11 @@ export type PolicyGradientSearchVariant = {
   startStateMode: PolicyGradientCliOptions['startStateMode'];
   openStartRatio?: number;
   advantageBaseline: PolicyGradientCliOptions['advantageBaseline'];
+  runtimeWrapperMode: RuntimeWrapperSearchMode;
   opponentMode: PolicyGradientCliOptions['opponentMode'];
 };
+
+export type RuntimeWrapperSearchMode = 'none' | 'runtime-survivors-only' | 'tactical-downweight';
 
 export type PolicyGradientSearchGate = {
   current: PolicyGradientSearchEvaluation;
@@ -100,6 +103,7 @@ export type PolicyGradientSearchOptions = {
     startStateModes: PolicyGradientCliOptions['startStateMode'][];
     openStartRatios: Array<number | undefined>;
     advantageBaselines: PolicyGradientCliOptions['advantageBaseline'][];
+    runtimeWrapperModes: RuntimeWrapperSearchMode[];
     opponentModes: PolicyGradientCliOptions['opponentMode'][];
   };
   variants: PolicyGradientSearchVariant[];
@@ -138,6 +142,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const openStartRatio = optionalClamp01Arg(argv, '--open-start-ratio');
   const advantageBaseline = advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_ADVANTAGE_BASELINES[0]);
   const opponentMode = opponentModeArg(argv, '--opponent-mode', DEFAULT_OPPONENT_MODES[0]);
+  const runtimeSurvivorsOnly = argv.includes('--runtime-survivors-only');
+  const runtimeWrapperWeightMode = runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', 'none');
   const grid = {
     trainingSeeds: seedListArg(argv, '--training-seeds', [seed]),
     learningRates: numberListArg(argv, '--learning-rates', [0.001, 0.0008, 0.0006]),
@@ -147,6 +153,9 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     startStateModes: startStateModeListArg(argv, '--start-state-modes', [startStateMode]),
     openStartRatios: optionalNumberListArg(argv, '--open-start-ratios', openStartRatio),
     advantageBaselines: advantageBaselineListArg(argv, '--advantage-baselines', [advantageBaseline]),
+    runtimeWrapperModes: runtimeWrapperModeListArg(argv, '--runtime-wrapper-modes', [
+      runtimeWrapperSearchMode(runtimeSurvivorsOnly, runtimeWrapperWeightMode)
+    ]),
     opponentModes: opponentModeListArg(argv, '--opponent-modes', [opponentMode])
   };
   const variants = expandVariants(grid);
@@ -155,8 +164,6 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const batchSize = positiveIntegerArg(argv, '--batch-size', 192);
   const discount = numberArg(argv, '--discount', 0.996);
   const actionMode = stringArg(argv, '--action-mode') ?? 'runtime';
-  const runtimeSurvivorsOnly = argv.includes('--runtime-survivors-only');
-  const runtimeWrapperWeightMode = runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', 'none');
   const bestPath = stringArg(argv, '--best') ?? 'public/models/neural-best.json';
   const outputDir = stringArg(argv, '--output-dir') ?? `training-runs/policy-gradient-search-s${seed}`;
 
@@ -220,7 +227,8 @@ export function runPolicyGradientSearch(
       `start${slugText(variant.startStateMode)}`,
       variant.openStartRatio === undefined ? undefined : `open${slugNumber(variant.openStartRatio)}`,
       `baseline${slugText(variant.advantageBaseline)}`,
-      `opp${slugText(variant.opponentMode)}`
+      `opp${slugText(variant.opponentMode)}`,
+      options.grid.runtimeWrapperModes.length > 1 ? `wrap${runtimeWrapperModeSlug(variant.runtimeWrapperMode)}` : undefined
     ].filter((part): part is string => part !== undefined).join('-');
     const candidatePath = join(options.outputDir, `${variantId}.json`);
     const candidateMetricsPath = join(options.outputDir, `${variantId}-metrics.json`);
@@ -237,6 +245,8 @@ export function runPolicyGradientSearch(
       startStateMode: variant.startStateMode,
       openStartRatio: variant.openStartRatio,
       advantageBaseline: variant.advantageBaseline,
+      runtimeSurvivorsOnly: variant.runtimeWrapperMode === 'runtime-survivors-only',
+      runtimeWrapperWeightMode: variant.runtimeWrapperMode === 'tactical-downweight' ? 'tactical-downweight' : 'none',
       opponentMode: variant.opponentMode
     };
 
@@ -559,6 +569,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestStartStateMode: result.best.variant.startStateMode,
     bestOpenStartRatio: result.best.variant.openStartRatio,
     bestAdvantageBaseline: result.best.variant.advantageBaseline,
+    bestRuntimeWrapperMode: result.best.variant.runtimeWrapperMode,
+    runtimeSurvivorsOnly: result.best.training.runtimeSurvivorsOnly,
     bestOpponentMode: result.best.variant.opponentMode,
     runtimeWrapperWeightMode: result.best.training.runtimeWrapperWeightMode
   })}\n`, 'utf8');
@@ -573,6 +585,7 @@ function expandVariants(grid: {
   startStateModes: readonly PolicyGradientCliOptions['startStateMode'][];
   openStartRatios: readonly (number | undefined)[];
   advantageBaselines: readonly PolicyGradientCliOptions['advantageBaseline'][];
+  runtimeWrapperModes: readonly RuntimeWrapperSearchMode[];
   opponentModes: readonly PolicyGradientCliOptions['opponentMode'][];
 }): PolicyGradientSearchVariant[] {
   const variants: PolicyGradientSearchVariant[] = [];
@@ -585,18 +598,21 @@ function expandVariants(grid: {
               const openStartRatios = startStateMode === 'mixed' ? grid.openStartRatios : [undefined];
               for (const openStartRatio of openStartRatios) {
                 for (const advantageBaseline of grid.advantageBaselines) {
-                  for (const opponentMode of grid.opponentModes) {
-                    variants.push({
-                      trainingSeed,
-                      learningRate,
-                      epochs,
-                      ppoClip,
-                      temperature,
-                      startStateMode,
-                      openStartRatio,
-                      advantageBaseline,
-                      opponentMode
-                    });
+                  for (const runtimeWrapperMode of grid.runtimeWrapperModes) {
+                    for (const opponentMode of grid.opponentModes) {
+                      variants.push({
+                        trainingSeed,
+                        learningRate,
+                        epochs,
+                        ppoClip,
+                        temperature,
+                        startStateMode,
+                        openStartRatio,
+                        advantageBaseline,
+                        runtimeWrapperMode,
+                        opponentMode
+                      });
+                    }
                   }
                 }
               }
@@ -628,6 +644,10 @@ function slugNumber(value: number): string {
 
 function slugText(value: string): string {
   return value.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '');
+}
+
+function runtimeWrapperModeSlug(mode: RuntimeWrapperSearchMode): string {
+  return mode === 'runtime-survivors-only' ? 'survivors' : slugText(mode);
 }
 
 function numberListArg(argv: readonly string[], name: string, fallback: readonly number[]): number[] {
@@ -723,6 +743,14 @@ function opponentModeListArg(
   return enumListArg(argv, name, fallback, isOpponentMode);
 }
 
+function runtimeWrapperModeListArg(
+  argv: readonly string[],
+  name: string,
+  fallback: readonly RuntimeWrapperSearchMode[]
+): RuntimeWrapperSearchMode[] {
+  return enumListArg(argv, name, fallback, isRuntimeWrapperSearchMode);
+}
+
 function enumListArg<T extends string>(
   argv: readonly string[],
   name: string,
@@ -759,6 +787,20 @@ function isAdvantageBaseline(value: string): value is PolicyGradientCliOptions['
 
 function isOpponentMode(value: string): value is PolicyGradientCliOptions['opponentMode'] {
   return value === 'self' || value === 'traditional' || value === 'league';
+}
+
+function isRuntimeWrapperSearchMode(value: string): value is RuntimeWrapperSearchMode {
+  return value === 'none' || value === 'runtime-survivors-only' || value === 'tactical-downweight';
+}
+
+function runtimeWrapperSearchMode(
+  runtimeSurvivorsOnly: boolean,
+  runtimeWrapperWeightMode: PolicyGradientCliOptions['runtimeWrapperWeightMode']
+): RuntimeWrapperSearchMode {
+  if (runtimeSurvivorsOnly) {
+    return 'runtime-survivors-only';
+  }
+  return runtimeWrapperWeightMode === 'tactical-downweight' ? 'tactical-downweight' : 'none';
 }
 
 function seedListArg(argv: readonly string[], name: string, fallback: readonly number[]): number[] {
