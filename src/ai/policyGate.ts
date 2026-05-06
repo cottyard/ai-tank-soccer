@@ -84,6 +84,60 @@ export type RuntimeTraceSeedSummary = RuntimeEvaluationResult & {
   flatPolicies: number;
 };
 
+export type RuntimeDecisionTraceRecord = NeuralDecisionTrace & {
+  seed: number;
+  match: number;
+  controlledTeam: Team;
+  decisionIndex: number;
+};
+
+export type RuntimeDecisionTraceRun = {
+  summary: RuntimeTraceSummary;
+  decisions: RuntimeDecisionTraceRecord[];
+};
+
+export type RuntimeDecisionTraceComparison = {
+  comparedDecisions: number;
+  missingCurrentDecisions: number;
+  missingCandidateDecisions: number;
+  rawPolicyChanges: number;
+  tacticalActionChanges: number;
+  finalActionChanges: number;
+  lostPolicyChanges: number;
+  lostWithTacticalRollout: number;
+  lostWithStaminaConserve: number;
+  lostWithCriticalStamina: number;
+  lostWithFlatPolicy: number;
+  seeds: RuntimeDecisionTraceSeedComparison[];
+  samples: RuntimeDecisionLostPolicyChangeSample[];
+};
+
+export type RuntimeDecisionTraceSeedComparison = Omit<RuntimeDecisionTraceComparison, 'seeds' | 'samples'> & {
+  seed: number;
+};
+
+export type RuntimeDecisionLostPolicyChangeSample = {
+  seed: number;
+  match: number;
+  controlledTeam: Team;
+  decisionIndex: number;
+  frame: number;
+  currentRawPolicyActionIndex?: number;
+  candidateRawPolicyActionIndex?: number;
+  currentTacticalActionIndex?: number;
+  candidateTacticalActionIndex?: number;
+  finalActionIndex: number;
+  reasons: string[];
+  staminaRatio: number;
+  ballDistance: number;
+  ballSpeed: number;
+  finishingPressure: number;
+  ownGoalPressure: number;
+  sideWallPressure: number;
+  attackCornerPressure: number;
+  ownCornerPressure: number;
+};
+
 export type PolicyGateResult = {
   accepted: boolean;
   currentScore: number;
@@ -161,31 +215,40 @@ export function traceRuntimePolicy(
     };
   });
 
+  return traceSummaryFromTotals(totals, seeds.length, seedSummaries);
+}
+
+export function traceRuntimePolicyDecisions(
+  weights: NeuralWeights,
+  options: RuntimeEvaluationOptions & { seeds?: readonly number[] } = {}
+): RuntimeDecisionTraceRun {
+  const seeds = options.seeds && options.seeds.length > 0
+    ? options.seeds
+    : [options.seed ?? 1];
+  const totals = emptyTraceTotals();
+  const decisions: RuntimeDecisionTraceRecord[] = [];
+  const seedSummaries = seeds.map((seed) => {
+    const traced = evaluateRuntimePolicyInternal(weights, {
+      ...options,
+      seed
+    }, true, true);
+    accumulateTraceTotals(totals, traced);
+    decisions.push(...traced.decisionRecords);
+    return {
+      seed,
+      ...traced.result,
+      decisions: traced.decisions,
+      tacticalRolloutUses: traced.tacticalRolloutUses,
+      tacticalRolloutChanges: traced.tacticalRolloutChanges,
+      staminaConserves: traced.staminaConserves,
+      criticalStaminaRegulations: traced.criticalStaminaRegulations,
+      flatPolicies: traced.flatPolicies
+    };
+  });
+
   return {
-    score: totals.score / seeds.length,
-    goalDiff: totals.goalsFor - totals.goalsAgainst,
-    ballProgress: totals.ballProgress / seeds.length,
-    goalsFor: totals.goalsFor,
-    goalsAgainst: totals.goalsAgainst,
-    winProxy: totals.winProxy / seeds.length,
-    decisions: totals.decisions,
-    policyActionCounts: totals.policyActionCounts,
-    tacticalActionCounts: totals.tacticalActionCounts,
-    finalActionCounts: totals.finalActionCounts,
-    tacticalRolloutUses: totals.tacticalRolloutUses,
-    tacticalRolloutChanges: totals.tacticalRolloutChanges,
-    staminaConserves: totals.staminaConserves,
-    criticalStaminaRegulations: totals.criticalStaminaRegulations,
-    flatPolicies: totals.flatPolicies,
-    averageStamina: safeAverage(totals.staminaSum, totals.decisions),
-    averageBallDistance: safeAverage(totals.ballDistanceSum, totals.decisions),
-    averageBallSpeed: safeAverage(totals.ballSpeedSum, totals.decisions),
-    averageFinishingPressure: safeAverage(totals.finishingPressureSum, totals.decisions),
-    averageOwnGoalPressure: safeAverage(totals.ownGoalPressureSum, totals.decisions),
-    averageSideWallPressure: safeAverage(totals.sideWallPressureSum, totals.decisions),
-    averageAttackCornerPressure: safeAverage(totals.attackCornerPressureSum, totals.decisions),
-    averageOwnCornerPressure: safeAverage(totals.ownCornerPressureSum, totals.decisions),
-    seeds: seedSummaries
+    summary: traceSummaryFromTotals(totals, seeds.length, seedSummaries),
+    decisions
   };
 }
 
@@ -239,10 +302,51 @@ export function compareRuntimeTraces(
   };
 }
 
+export function compareRuntimeDecisionTraces(
+  candidate: readonly RuntimeDecisionTraceRecord[],
+  current: readonly RuntimeDecisionTraceRecord[],
+  sampleLimit = 20
+): RuntimeDecisionTraceComparison {
+  const currentByKey = decisionRecordsByKey(current);
+  const candidateByKey = decisionRecordsByKey(candidate);
+  const seedTotals = new Map<number, MutableDecisionTraceComparison>();
+  const totals = emptyDecisionTraceComparison();
+  const samples: RuntimeDecisionLostPolicyChangeSample[] = [];
+  const keys = new Set([...currentByKey.keys(), ...candidateByKey.keys()]);
+
+  for (const key of [...keys].sort(compareDecisionKeys)) {
+    const currentRecord = currentByKey.get(key);
+    const candidateRecord = candidateByKey.get(key);
+    if (!currentRecord) {
+      totals.missingCurrentDecisions += 1;
+      seedMutableTotals(seedTotals, candidateRecord!.seed).missingCurrentDecisions += 1;
+      continue;
+    }
+    if (!candidateRecord) {
+      totals.missingCandidateDecisions += 1;
+      seedMutableTotals(seedTotals, currentRecord.seed).missingCandidateDecisions += 1;
+      continue;
+    }
+
+    const seed = seedMutableTotals(seedTotals, currentRecord.seed);
+    accumulateDecisionComparison(totals, candidateRecord, currentRecord, samples, sampleLimit);
+    accumulateDecisionComparison(seed, candidateRecord, currentRecord, samples, 0);
+  }
+
+  return {
+    ...totals,
+    seeds: [...seedTotals.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([seed, row]) => ({ seed, ...row })),
+    samples
+  };
+}
+
 function evaluateRuntimePolicyInternal(
   weights: NeuralWeights,
   options: RuntimeEvaluationOptions = {},
-  collectTrace: boolean
+  collectTrace: boolean,
+  collectDecisionRecords = false
 ): {
   result: RuntimeEvaluationResult;
   decisions: number;
@@ -262,16 +366,33 @@ function evaluateRuntimePolicyInternal(
   sideWallPressureSum: number;
   attackCornerPressureSum: number;
   ownCornerPressureSum: number;
+  decisionRecords: RuntimeDecisionTraceRecord[];
 } {
   const seed = options.seed ?? 1;
   const matches = Math.max(1, Math.floor(options.matches ?? 8));
   const frames = Math.max(1, Math.floor(options.frames ?? 30 * 30));
   const traceTotals = emptyTraceTotals();
+  const decisionRecords: RuntimeDecisionTraceRecord[] = [];
+  let currentMatch = 0;
+  let currentTeam: Team = 'red';
+  let decisionIndex = 0;
   const neural = createNeuralStrategy({
     weights,
     name: 'neural-runtime-gate',
     tacticalRollout: true,
-    onDecision: collectTrace ? (trace) => recordDecisionTrace(traceTotals, trace) : undefined
+    onDecision: collectTrace ? (trace) => {
+      recordDecisionTrace(traceTotals, trace);
+      if (collectDecisionRecords) {
+        decisionRecords.push({
+          seed,
+          match: currentMatch,
+          controlledTeam: currentTeam,
+          decisionIndex,
+          ...trace
+        });
+      }
+      decisionIndex += 1;
+    } : undefined
   });
   let goalsFor = 0;
   let goalsAgainst = 0;
@@ -280,6 +401,9 @@ function evaluateRuntimePolicyInternal(
 
   for (let match = 0; match < matches; match += 1) {
     const team: Team = match % 2 === 0 ? 'red' : 'blue';
+    currentMatch = match;
+    currentTeam = team;
+    decisionIndex = 0;
     const initialState = createSeededInitialState(seed, match, team);
     const result = simulateMatch({
       red: team === 'red' ? neural : traditionalStrategy,
@@ -324,7 +448,8 @@ function evaluateRuntimePolicyInternal(
     ownGoalPressureSum: traceTotals.ownGoalPressureSum,
     sideWallPressureSum: traceTotals.sideWallPressureSum,
     attackCornerPressureSum: traceTotals.attackCornerPressureSum,
-    ownCornerPressureSum: traceTotals.ownCornerPressureSum
+    ownCornerPressureSum: traceTotals.ownCornerPressureSum,
+    decisionRecords
   };
 }
 
@@ -410,6 +535,40 @@ function accumulateTraceTotals(
   }
 }
 
+function traceSummaryFromTotals(
+  totals: RuntimeTraceTotals,
+  seedCount: number,
+  seedSummaries: RuntimeTraceSeedSummary[]
+): RuntimeTraceSummary {
+  const divisor = Math.max(1, seedCount);
+  return {
+    score: totals.score / divisor,
+    goalDiff: totals.goalsFor - totals.goalsAgainst,
+    ballProgress: totals.ballProgress / divisor,
+    goalsFor: totals.goalsFor,
+    goalsAgainst: totals.goalsAgainst,
+    winProxy: totals.winProxy / divisor,
+    decisions: totals.decisions,
+    policyActionCounts: totals.policyActionCounts,
+    tacticalActionCounts: totals.tacticalActionCounts,
+    finalActionCounts: totals.finalActionCounts,
+    tacticalRolloutUses: totals.tacticalRolloutUses,
+    tacticalRolloutChanges: totals.tacticalRolloutChanges,
+    staminaConserves: totals.staminaConserves,
+    criticalStaminaRegulations: totals.criticalStaminaRegulations,
+    flatPolicies: totals.flatPolicies,
+    averageStamina: safeAverage(totals.staminaSum, totals.decisions),
+    averageBallDistance: safeAverage(totals.ballDistanceSum, totals.decisions),
+    averageBallSpeed: safeAverage(totals.ballSpeedSum, totals.decisions),
+    averageFinishingPressure: safeAverage(totals.finishingPressureSum, totals.decisions),
+    averageOwnGoalPressure: safeAverage(totals.ownGoalPressureSum, totals.decisions),
+    averageSideWallPressure: safeAverage(totals.sideWallPressureSum, totals.decisions),
+    averageAttackCornerPressure: safeAverage(totals.attackCornerPressureSum, totals.decisions),
+    averageOwnCornerPressure: safeAverage(totals.ownCornerPressureSum, totals.decisions),
+    seeds: seedSummaries
+  };
+}
+
 function recordDecisionTrace(totals: RuntimeTraceTotals, trace: NeuralDecisionTrace): void {
   totals.decisions += 1;
   if (trace.policyActionIndex !== undefined) {
@@ -432,6 +591,135 @@ function recordDecisionTrace(totals: RuntimeTraceTotals, trace: NeuralDecisionTr
   totals.sideWallPressureSum += trace.sideWallPressure;
   totals.attackCornerPressureSum += trace.attackCornerPressure;
   totals.ownCornerPressureSum += trace.ownCornerPressure;
+}
+
+type MutableDecisionTraceComparison = Omit<RuntimeDecisionTraceComparison, 'seeds' | 'samples'>;
+
+function emptyDecisionTraceComparison(): MutableDecisionTraceComparison {
+  return {
+    comparedDecisions: 0,
+    missingCurrentDecisions: 0,
+    missingCandidateDecisions: 0,
+    rawPolicyChanges: 0,
+    tacticalActionChanges: 0,
+    finalActionChanges: 0,
+    lostPolicyChanges: 0,
+    lostWithTacticalRollout: 0,
+    lostWithStaminaConserve: 0,
+    lostWithCriticalStamina: 0,
+    lostWithFlatPolicy: 0
+  };
+}
+
+function seedMutableTotals(
+  totals: Map<number, MutableDecisionTraceComparison>,
+  seed: number
+): MutableDecisionTraceComparison {
+  const existing = totals.get(seed);
+  if (existing) {
+    return existing;
+  }
+  const created = emptyDecisionTraceComparison();
+  totals.set(seed, created);
+  return created;
+}
+
+function accumulateDecisionComparison(
+  totals: MutableDecisionTraceComparison,
+  candidate: RuntimeDecisionTraceRecord,
+  current: RuntimeDecisionTraceRecord,
+  samples: RuntimeDecisionLostPolicyChangeSample[],
+  sampleLimit: number
+): void {
+  totals.comparedDecisions += 1;
+  const rawPolicyChanged = candidate.rawPolicyActionIndex !== current.rawPolicyActionIndex;
+  const tacticalActionChanged = candidate.tacticalActionIndex !== current.tacticalActionIndex;
+  const finalActionChanged = candidate.finalActionIndex !== current.finalActionIndex;
+
+  totals.rawPolicyChanges += rawPolicyChanged ? 1 : 0;
+  totals.tacticalActionChanges += tacticalActionChanged ? 1 : 0;
+  totals.finalActionChanges += finalActionChanged ? 1 : 0;
+
+  if (!rawPolicyChanged || finalActionChanged) {
+    return;
+  }
+
+  const reasons = hiddenPolicyChangeReasons(candidate, current);
+  totals.lostPolicyChanges += 1;
+  totals.lostWithTacticalRollout += reasons.includes('tactical-rollout') ? 1 : 0;
+  totals.lostWithStaminaConserve += reasons.includes('stamina-conserve') ? 1 : 0;
+  totals.lostWithCriticalStamina += reasons.includes('critical-stamina') ? 1 : 0;
+  totals.lostWithFlatPolicy += reasons.includes('flat-policy') ? 1 : 0;
+
+  if (sampleLimit > 0 && samples.length < sampleLimit) {
+    samples.push({
+      seed: candidate.seed,
+      match: candidate.match,
+      controlledTeam: candidate.controlledTeam,
+      decisionIndex: candidate.decisionIndex,
+      frame: candidate.frame,
+      currentRawPolicyActionIndex: current.rawPolicyActionIndex,
+      candidateRawPolicyActionIndex: candidate.rawPolicyActionIndex,
+      currentTacticalActionIndex: current.tacticalActionIndex,
+      candidateTacticalActionIndex: candidate.tacticalActionIndex,
+      finalActionIndex: candidate.finalActionIndex,
+      reasons,
+      staminaRatio: candidate.staminaRatio,
+      ballDistance: candidate.ballDistance,
+      ballSpeed: candidate.ballSpeed,
+      finishingPressure: candidate.finishingPressure,
+      ownGoalPressure: candidate.ownGoalPressure,
+      sideWallPressure: candidate.sideWallPressure,
+      attackCornerPressure: candidate.attackCornerPressure,
+      ownCornerPressure: candidate.ownCornerPressure
+    });
+  }
+}
+
+function hiddenPolicyChangeReasons(
+  candidate: RuntimeDecisionTraceRecord,
+  current: RuntimeDecisionTraceRecord
+): string[] {
+  const reasons: string[] = [];
+  if (candidate.tacticalRolloutChanged || current.tacticalRolloutChanged) {
+    reasons.push('tactical-rollout');
+  }
+  if (candidate.staminaConserved || current.staminaConserved) {
+    reasons.push('stamina-conserve');
+  }
+  if (candidate.criticalStaminaRegulated || current.criticalStaminaRegulated) {
+    reasons.push('critical-stamina');
+  }
+  if (candidate.flatPolicy || current.flatPolicy) {
+    reasons.push('flat-policy');
+  }
+  if (reasons.length === 0) {
+    reasons.push('unchanged-final-action');
+  }
+  return reasons;
+}
+
+function decisionRecordsByKey(
+  records: readonly RuntimeDecisionTraceRecord[]
+): Map<string, RuntimeDecisionTraceRecord> {
+  const byKey = new Map<string, RuntimeDecisionTraceRecord>();
+  for (const record of records) {
+    byKey.set(decisionRecordKey(record), record);
+  }
+  return byKey;
+}
+
+function decisionRecordKey(record: RuntimeDecisionTraceRecord): string {
+  return `${record.seed}|${record.match}|${record.controlledTeam}|${record.decisionIndex}`;
+}
+
+function compareDecisionKeys(a: string, b: string): number {
+  const [aSeed, aMatch, aTeam, aDecision] = a.split('|');
+  const [bSeed, bMatch, bTeam, bDecision] = b.split('|');
+  return Number(aSeed) - Number(bSeed) ||
+    Number(aMatch) - Number(bMatch) ||
+    aTeam.localeCompare(bTeam) ||
+    Number(aDecision) - Number(bDecision);
 }
 
 function safeAverage(total: number, count: number): number {

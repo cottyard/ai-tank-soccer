@@ -2,7 +2,15 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 import { loadWeightsPayload } from './coach-neural';
-import { compareRuntimeTraces, traceRuntimePolicy, type RuntimeTraceDelta, type RuntimeTraceSummary } from '../src/ai/policyGate';
+import {
+  compareRuntimeDecisionTraces,
+  compareRuntimeTraces,
+  traceRuntimePolicy,
+  traceRuntimePolicyDecisions,
+  type RuntimeDecisionTraceComparison,
+  type RuntimeTraceDelta,
+  type RuntimeTraceSummary
+} from '../src/ai/policyGate';
 
 declare const process: {
   argv: string[];
@@ -16,12 +24,22 @@ type TraceRuntimePolicyOptions = {
   seeds: number[];
   matches: number;
   frames: number;
+  decisionAnalysis: boolean;
 };
 
 type NamedTrace = {
   name: string;
   path: string;
   trace: RuntimeTraceSummary;
+};
+
+type TraceRuntimePolicyResult = {
+  traces: NamedTrace[];
+  decisionAnalysis?: {
+    currentDecisionCount: number;
+    candidateDecisionCount: number;
+    comparison: RuntimeDecisionTraceComparison;
+  };
 };
 
 const DEFAULT_STANDARD_SEEDS = [19, 31, 43, 57, 71];
@@ -33,37 +51,53 @@ export function parseTraceRuntimePolicyArgs(argv: readonly string[]): TraceRunti
     outputPath: stringArg(argv, '--output'),
     seeds: seedListArg(argv, '--seeds', DEFAULT_STANDARD_SEEDS),
     matches: positiveIntegerArg(argv, '--matches', 4),
-    frames: positiveIntegerArg(argv, '--frames', 600)
+    frames: positiveIntegerArg(argv, '--frames', 600),
+    decisionAnalysis: argv.includes('--decision-analysis')
   };
 }
 
 export function runTraceRuntimePolicy(options: TraceRuntimePolicyOptions): NamedTrace[] {
+  return runTraceRuntimePolicyDetailed(options).traces;
+}
+
+export function runTraceRuntimePolicyDetailed(options: TraceRuntimePolicyOptions): TraceRuntimePolicyResult {
   const traces = [
     traceNamedPolicy('current', options.currentPath, options)
   ];
   if (options.candidatePath) {
     traces.push(traceNamedPolicy('candidate', options.candidatePath, options));
   }
+  const decisionAnalysis = options.decisionAnalysis && options.candidatePath
+    ? analyzeRuntimeDecisionVisibility(options)
+    : undefined;
   if (options.outputPath) {
     ensureParentDirectory(options.outputPath);
     writeFileSync(options.outputPath, `${JSON.stringify({
       generatedAt: new Date().toISOString(),
       options,
       traces,
-      delta: traces.length > 1 ? compareRuntimeTraces(traces[1].trace, traces[0].trace) : undefined
+      delta: traces.length > 1 ? compareRuntimeTraces(traces[1].trace, traces[0].trace) : undefined,
+      decisionAnalysis
     }, null, 2)}\n`, 'utf8');
   }
-  return traces;
+  return {
+    traces,
+    decisionAnalysis
+  };
 }
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   try {
-    const traces = runTraceRuntimePolicy(parseTraceRuntimePolicyArgs(argv));
+    const result = runTraceRuntimePolicyDetailed(parseTraceRuntimePolicyArgs(argv));
+    const traces = result.traces;
     for (const row of traces) {
       console.log(formatTrace(row));
     }
     if (traces.length > 1) {
       console.log(formatDelta(compareRuntimeTraces(traces[1].trace, traces[0].trace)));
+    }
+    if (result.decisionAnalysis) {
+      console.log(formatDecisionAnalysis(result.decisionAnalysis.comparison));
     }
   } catch (error) {
     process.exitCode = 1;
@@ -84,6 +118,28 @@ function traceNamedPolicy(
       matches: options.matches,
       frames: options.frames
     })
+  };
+}
+
+function analyzeRuntimeDecisionVisibility(options: TraceRuntimePolicyOptions): TraceRuntimePolicyResult['decisionAnalysis'] {
+  const traceOptions = {
+    seeds: options.seeds,
+    matches: options.matches,
+    frames: options.frames
+  };
+  const current = traceRuntimePolicyDecisions(
+    loadWeightsPayload(readFileSync(options.currentPath, 'utf8')),
+    traceOptions
+  );
+  const candidate = traceRuntimePolicyDecisions(
+    loadWeightsPayload(readFileSync(options.candidatePath!, 'utf8')),
+    traceOptions
+  );
+
+  return {
+    currentDecisionCount: current.decisions.length,
+    candidateDecisionCount: candidate.decisions.length,
+    comparison: compareRuntimeDecisionTraces(candidate.decisions, current.decisions)
   };
 }
 
@@ -118,6 +174,23 @@ function formatDelta(delta: RuntimeTraceDelta): string {
     `finalActionChangeRate=${formatNumber(delta.finalActionDistributionChangeRate)}`,
     `finalActionDelta=${delta.finalActionCounts.join(',')}`
   ].join(' ');
+}
+
+function formatDecisionAnalysis(comparison: RuntimeDecisionTraceComparison): string {
+  const seedSummary = comparison.seeds
+    .map((seed) => `seed${seed.seed}:raw=${seed.rawPolicyChanges},final=${seed.finalActionChanges},lost=${seed.lostPolicyChanges},tactical=${seed.lostWithTacticalRollout},stamina=${seed.lostWithStaminaConserve},critical=${seed.lostWithCriticalStamina}`)
+    .join(' ');
+  return [
+    'decisionAnalysis:',
+    `compared=${comparison.comparedDecisions}`,
+    `rawPolicyChanges=${comparison.rawPolicyChanges}`,
+    `finalActionChanges=${comparison.finalActionChanges}`,
+    `lostPolicyChanges=${comparison.lostPolicyChanges}`,
+    `lostTactical=${comparison.lostWithTacticalRollout}`,
+    `lostStamina=${comparison.lostWithStaminaConserve}`,
+    `lostCritical=${comparison.lostWithCriticalStamina}`,
+    seedSummary
+  ].filter(Boolean).join(' ');
 }
 
 function formatNumber(value: unknown): string {

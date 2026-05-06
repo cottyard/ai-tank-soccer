@@ -36,6 +36,7 @@ export type NeuralDecisionTrace = {
   sideWallPressure: number;
   attackCornerPressure: number;
   ownCornerPressure: number;
+  rawPolicyActionIndex?: number;
   policyActionIndex?: number;
   tacticalActionIndex?: number;
   finalActionIndex: number;
@@ -83,7 +84,11 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
 
       const pressures = pressureSignals(state, team);
       if (shouldConserveStamina(state, team, tank, pressures)) {
+        const rawPolicyActionIndex = onDecision
+          ? policyArgmaxActionIndex(evaluateTankNetwork(state, team, tank, resolveWeights()))
+          : undefined;
         onDecision?.(decisionTrace(state, team, tank, pressures, {
+          rawPolicyActionIndex,
           finalCommand: STOP_COMMAND,
           tacticalRolloutUsed: false,
           tacticalRolloutChanged: false,
@@ -106,6 +111,7 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
 
       onDecision?.(decisionTrace(state, team, tank, pressures, {
         policyActionIndex: decision.policyActionIndex,
+        rawPolicyActionIndex: decision.rawPolicyActionIndex,
         tacticalActionIndex: decision.tacticalActionIndex,
         finalCommand: regulatedCommand,
         tacticalRolloutUsed: decision.tacticalRolloutUsed,
@@ -592,6 +598,7 @@ function policyOutputToDecision(
 ): {
   command: TankCommand;
   policyActionIndex?: number;
+  rawPolicyActionIndex?: number;
   tacticalActionIndex?: number;
   tacticalRolloutUsed: boolean;
   tacticalRolloutChanged: boolean;
@@ -608,15 +615,12 @@ function policyOutputToDecision(
     };
   }
 
-  const probabilities = policyProbabilities(logits);
-  const policyActionIndex = probabilities.reduce(
-    (best, value, index) => value > probabilities[best] ? index : best,
-    0
-  );
+  const policyActionIndex = policyArgmaxActionIndex(logits) ?? 4;
   if (!useTacticalRollout) {
     return {
       command: actionIndexToCommand(policyActionIndex),
       policyActionIndex,
+      rawPolicyActionIndex: policyActionIndex,
       tacticalActionIndex: policyActionIndex,
       tacticalRolloutUsed: false,
       tacticalRolloutChanged: false,
@@ -633,6 +637,7 @@ function policyOutputToDecision(
   return {
     command: actionIndexToCommand(bestIndex),
     policyActionIndex,
+    rawPolicyActionIndex: policyActionIndex,
     tacticalActionIndex: bestIndex,
     tacticalRolloutUsed: true,
     tacticalRolloutChanged: bestIndex !== policyActionIndex,
@@ -654,6 +659,7 @@ function decisionTrace(
     staminaConserved: boolean;
     criticalStaminaRegulated: boolean;
     flatPolicy: boolean;
+    rawPolicyActionIndex?: number;
   }
 ): NeuralDecisionTrace {
   return {
@@ -668,6 +674,7 @@ function decisionTrace(
     sideWallPressure: pressures.sideWall,
     attackCornerPressure: pressures.attackCorner,
     ownCornerPressure: pressures.ownCorner,
+    rawPolicyActionIndex: decision.rawPolicyActionIndex,
     policyActionIndex: decision.policyActionIndex,
     tacticalActionIndex: decision.tacticalActionIndex,
     finalActionIndex: commandToActionIndex(decision.finalCommand),
@@ -677,6 +684,20 @@ function decisionTrace(
     criticalStaminaRegulated: decision.criticalStaminaRegulated,
     flatPolicy: decision.flatPolicy
   };
+}
+
+function policyArgmaxActionIndex(logits: readonly number[]): number | undefined {
+  const maxLogit = Math.max(...logits);
+  const minLogit = Math.min(...logits);
+  if (Math.abs(maxLogit - minLogit) < 1e-9) {
+    return undefined;
+  }
+
+  const probabilities = policyProbabilities(logits);
+  return probabilities.reduce(
+    (best, value, index) => value > probabilities[best] ? index : best,
+    0
+  );
 }
 
 function validateWeights(weights: NeuralWeights): NeuralWeights {

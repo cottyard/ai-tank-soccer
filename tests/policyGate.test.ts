@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  compareRuntimeDecisionTraces,
   compareRuntimeTraces,
   evaluatePolicyGate,
   evaluateRuntimePolicy,
   selectAcceptedPolicy,
+  traceRuntimePolicyDecisions,
   traceRuntimePolicy,
+  type RuntimeDecisionTraceRecord,
   type RuntimeTraceSummary
 } from '../src/ai/policyGate';
 import { POLICY_ACTION_COUNT } from '../src/ai/policyActions';
-import { parseTraceRuntimePolicyArgs } from '../scripts/trace-runtime-policy';
+import { parseTraceRuntimePolicyArgs, runTraceRuntimePolicy } from '../scripts/trace-runtime-policy';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 import type { EvaluationOptions, EvaluationResult } from '../src/ai/neuralTraining';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
@@ -130,6 +136,40 @@ describe('policy adoption gate', () => {
     expect(options.matches).toBe(4);
   });
 
+  it('writes decision-level policy visibility analysis from the trace CLI', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-runtime-trace-'));
+    const currentPath = join(workdir, 'current.json');
+    const candidatePath = join(workdir, 'candidate.json');
+    const outputPath = join(workdir, 'trace.json');
+    writeFileSync(currentPath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
+    writeFileSync(candidatePath, JSON.stringify({ weights: defaultNeuralWeights() }), 'utf8');
+
+    const traces = runTraceRuntimePolicy({
+      ...parseTraceRuntimePolicyArgs([]),
+      currentPath,
+      candidatePath,
+      outputPath,
+      seeds: [5],
+      matches: 1,
+      frames: 30,
+      decisionAnalysis: true
+    });
+
+    expect(traces).toHaveLength(2);
+    expect(existsSync(outputPath)).toBe(true);
+    const payload = JSON.parse(readFileSync(outputPath, 'utf8')) as {
+      decisionAnalysis?: {
+        currentDecisionCount: number;
+        candidateDecisionCount: number;
+        comparison: { comparedDecisions: number; seeds: Array<{ seed: number }> };
+      };
+    };
+    expect(payload.decisionAnalysis?.currentDecisionCount).toBeGreaterThan(0);
+    expect(payload.decisionAnalysis?.candidateDecisionCount).toBe(payload.decisionAnalysis?.currentDecisionCount);
+    expect(payload.decisionAnalysis?.comparison.comparedDecisions).toBe(payload.decisionAnalysis?.currentDecisionCount);
+    expect(payload.decisionAnalysis?.comparison.seeds).toEqual([expect.objectContaining({ seed: 5 })]);
+  });
+
   it('compares runtime traces as behavior-visibility deltas', () => {
     const current = traceSummary({
       decisions: 100,
@@ -160,6 +200,121 @@ describe('policy adoption gate', () => {
     expect(delta.tacticalRolloutChangeRate).toBeCloseTo(0.1, 9);
     expect(delta.staminaConserveRate).toBeCloseTo(-0.02, 9);
     expect(delta.criticalStaminaRegulationRate).toBeCloseTo(0.04, 9);
+  });
+
+  it('collects seed-level runtime decision records for localizing wrapper-hidden changes', () => {
+    const traced = traceRuntimePolicyDecisions(defaultNeuralWeights(), {
+      seeds: [5],
+      matches: 2,
+      frames: 60
+    });
+
+    expect(traced.summary.decisions).toBeGreaterThan(0);
+    expect(traced.decisions).toHaveLength(traced.summary.decisions);
+    expect(traced.summary.seeds).toHaveLength(1);
+    expect(traced.decisions[0]).toMatchObject({
+      seed: 5,
+      match: 0,
+      controlledTeam: 'red',
+      decisionIndex: 0
+    });
+    expect(new Set(traced.decisions.map((record) => record.match))).toEqual(new Set([0, 1]));
+    expect(traced.decisions.every((record) => record.seed === 5)).toBe(true);
+  });
+
+  it('identifies policy argmax changes hidden by tactical rollout and stamina guards per seed', () => {
+    const current = [
+      decisionRecord({
+        seed: 97,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 1,
+        policyActionIndex: 1,
+        tacticalActionIndex: 4,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 97,
+        decisionIndex: 1,
+        rawPolicyActionIndex: 2,
+        policyActionIndex: 2,
+        tacticalActionIndex: 2,
+        finalActionIndex: 4,
+        criticalStaminaRegulated: true
+      }),
+      decisionRecord({
+        seed: 109,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 7,
+        policyActionIndex: 7,
+        tacticalActionIndex: 7,
+        finalActionIndex: 7
+      })
+    ];
+    const candidate = [
+      decisionRecord({
+        seed: 97,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 2,
+        policyActionIndex: 2,
+        tacticalActionIndex: 4,
+        finalActionIndex: 4,
+        tacticalRolloutChanged: true
+      }),
+      decisionRecord({
+        seed: 97,
+        decisionIndex: 1,
+        rawPolicyActionIndex: 3,
+        policyActionIndex: 3,
+        tacticalActionIndex: 3,
+        finalActionIndex: 4,
+        criticalStaminaRegulated: true
+      }),
+      decisionRecord({
+        seed: 109,
+        decisionIndex: 0,
+        rawPolicyActionIndex: 7,
+        policyActionIndex: 7,
+        tacticalActionIndex: 7,
+        finalActionIndex: 8
+      })
+    ];
+
+    const comparison = compareRuntimeDecisionTraces(candidate, current);
+
+    expect(comparison.comparedDecisions).toBe(3);
+    expect(comparison.rawPolicyChanges).toBe(2);
+    expect(comparison.finalActionChanges).toBe(1);
+    expect(comparison.lostPolicyChanges).toBe(2);
+    expect(comparison.lostWithTacticalRollout).toBe(1);
+    expect(comparison.lostWithCriticalStamina).toBe(1);
+    expect(comparison.lostWithStaminaConserve).toBe(0);
+    expect(comparison.seeds).toEqual([
+      expect.objectContaining({
+        seed: 97,
+        comparedDecisions: 2,
+        rawPolicyChanges: 2,
+        finalActionChanges: 0,
+        lostPolicyChanges: 2,
+        lostWithTacticalRollout: 1,
+        lostWithCriticalStamina: 1
+      }),
+      expect.objectContaining({
+        seed: 109,
+        comparedDecisions: 1,
+        rawPolicyChanges: 0,
+        finalActionChanges: 1,
+        lostPolicyChanges: 0
+      })
+    ]);
+    expect(comparison.samples[0]).toMatchObject({
+      seed: 97,
+      decisionIndex: 0,
+      finalActionIndex: 4,
+      currentRawPolicyActionIndex: 1,
+      candidateRawPolicyActionIndex: 2,
+      reasons: ['tactical-rollout']
+    });
   });
 });
 
@@ -194,6 +349,33 @@ function traceSummary(overrides: Partial<RuntimeTraceSummary>): RuntimeTraceSumm
     averageAttackCornerPressure: 0,
     averageOwnCornerPressure: 0,
     seeds: [],
+    ...overrides
+  };
+}
+
+function decisionRecord(overrides: Partial<RuntimeDecisionTraceRecord>): RuntimeDecisionTraceRecord {
+  return {
+    seed: 97,
+    match: 0,
+    controlledTeam: 'red',
+    decisionIndex: 0,
+    frame: 0,
+    team: 'red',
+    tankId: 'red-0',
+    staminaRatio: 1,
+    ballDistance: 100,
+    ballSpeed: 0,
+    finishingPressure: 0,
+    ownGoalPressure: 0,
+    sideWallPressure: 0,
+    attackCornerPressure: 0,
+    ownCornerPressure: 0,
+    finalActionIndex: 4,
+    tacticalRolloutUsed: false,
+    tacticalRolloutChanged: false,
+    staminaConserved: false,
+    criticalStaminaRegulated: false,
+    flatPolicy: false,
     ...overrides
   };
 }
