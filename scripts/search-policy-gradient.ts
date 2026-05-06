@@ -7,9 +7,13 @@ import {
   type PolicyGradientCliOptions
 } from './train-policy-gradient';
 import {
+  compareRuntimeDecisionTraces,
   compareRuntimeTraces,
   evaluateRuntimePolicy,
+  traceRuntimePolicyDecisions,
   traceRuntimePolicy,
+  type RuntimeDecisionTraceComparison,
+  type RuntimeDecisionTraceRun,
   type RuntimeEvaluationOptions,
   type RuntimeEvaluationResult,
   type RuntimeTraceDelta,
@@ -25,6 +29,7 @@ declare const process: {
 
 export type PolicyGradientSearchEvaluation = RuntimeEvaluationResult;
 export type PolicyGradientSearchTrace = RuntimeTraceSummary;
+export type RuntimeDecisionSearchTrace = RuntimeDecisionTraceRun;
 
 export type PolicyGradientSearchVariant = {
   trainingSeed: number;
@@ -48,6 +53,7 @@ export type PolicyGradientSearchGate = {
   candidate: PolicyGradientSearchEvaluation;
   delta: PolicyGradientSearchEvaluation;
   trace?: PolicyGradientSearchTraceGate;
+  decisionTrace?: PolicyGradientSearchDecisionTraceGate;
   seeds: PolicyGradientSearchSeedResult[];
 };
 
@@ -55,6 +61,13 @@ export type PolicyGradientSearchTraceGate = {
   current: PolicyGradientSearchTrace;
   candidate: PolicyGradientSearchTrace;
   delta: RuntimeTraceDelta;
+};
+
+export type PolicyGradientSearchDecisionTraceGate = {
+  currentDecisionCount: number;
+  candidateDecisionCount: number;
+  comparison: RuntimeDecisionTraceComparison;
+  lowPressureForwardLossDivergences: number;
 };
 
 export type PolicyGradientSearchSeedResult = {
@@ -95,6 +108,7 @@ export type PolicyGradientSearchOptions = {
   gateMatches: number;
   gateFrames: number;
   traceGate: boolean;
+  decisionTraceGate: boolean;
   standardSeeds: number[];
   holdoutSeeds: number[];
   training: PolicyGradientCliOptions;
@@ -133,6 +147,10 @@ type PolicyGradientSearchDependencies = {
     weights: NeuralWeights,
     options: RuntimeEvaluationOptions & { seeds?: readonly number[] }
   ) => PolicyGradientSearchTrace;
+  decisionTrace?: (
+    weights: NeuralWeights,
+    options: RuntimeEvaluationOptions & { seeds?: readonly number[] }
+  ) => RuntimeDecisionSearchTrace;
 };
 
 const DEFAULT_SEED = 2026050212;
@@ -202,6 +220,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
     traceGate: argv.includes('--trace-gate'),
+    decisionTraceGate: argv.includes('--decision-trace-gate'),
     standardSeeds: seedListArg(argv, '--standard-seeds', DEFAULT_STANDARD_SEEDS),
     holdoutSeeds: seedListArg(argv, '--holdout-seeds', DEFAULT_HOLDOUT_SEEDS),
     training: parseTrainingOptions(argv, seed, {
@@ -231,6 +250,7 @@ export function runPolicyGradientSearch(
   const train = dependencies.train ?? runPolicyGradientCli;
   const evaluate = dependencies.evaluate ?? evaluateRuntimePolicy;
   const trace = dependencies.trace ?? traceRuntimePolicy;
+  const decisionTrace = dependencies.decisionTrace ?? traceRuntimePolicyDecisions;
   const currentWeights = loadWeightsPayload(readFileSync(options.bestPath, 'utf8'));
   ensureDirectory(options.outputDir);
 
@@ -289,8 +309,8 @@ export function runPolicyGradientSearch(
       candidatePath,
       candidateMetricsPath,
       training,
-      standard: evaluateGate(currentWeights, candidateWeights, options.standardSeeds, options, evaluate, trace),
-      holdout: evaluateGate(currentWeights, candidateWeights, options.holdoutSeeds, options, evaluate, trace)
+      standard: evaluateGate(currentWeights, candidateWeights, options.standardSeeds, options, evaluate, trace, decisionTrace),
+      holdout: evaluateGate(currentWeights, candidateWeights, options.holdoutSeeds, options, evaluate, trace, decisionTrace)
     };
   }).sort((a, b) => compareRows(a, b))
     .map((row, index) => ({ ...row, rank: index + 1 }));
@@ -325,8 +345,11 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     console.log(`bestTrainingSeed=${result.best.variant.trainingSeed}`);
     console.log(`bestScoreDelta=${result.best.standard.delta.score.toFixed(3)}`);
     console.log(`bestHoldoutScoreDelta=${result.best.holdout.delta.score.toFixed(3)}`);
-    if (result.best.holdout.trace) {
+  if (result.best.holdout.trace) {
       console.log(`bestHoldoutFinalActionChangeRate=${result.best.holdout.trace.delta.finalActionDistributionChangeRate.toFixed(3)}`);
+    }
+    if (result.best.standard.decisionTrace) {
+      console.log(`bestStandardLowPressureForwardLossDivergences=${result.best.standard.decisionTrace.lowPressureForwardLossDivergences}`);
     }
     console.log(`bestGoals=${result.best.standard.candidate.goalsFor}-${result.best.standard.candidate.goalsAgainst}`);
     console.log(`bestHoldoutGoals=${result.best.holdout.candidate.goalsFor}-${result.best.holdout.candidate.goalsAgainst}`);
@@ -429,7 +452,8 @@ function evaluateGate(
   seeds: readonly number[],
   options: PolicyGradientSearchOptions,
   evaluate: (weights: NeuralWeights, options: RuntimeEvaluationOptions) => PolicyGradientSearchEvaluation,
-  trace?: (weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => PolicyGradientSearchTrace
+  trace?: (weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => PolicyGradientSearchTrace,
+  decisionTrace?: (weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => RuntimeDecisionSearchTrace
 ): PolicyGradientSearchGate {
   const seedResults = seeds.map((seed) => {
     const current = evaluate(currentWeights, {
@@ -457,6 +481,9 @@ function evaluateGate(
     candidate,
     delta: deltaEvaluation(candidate, current),
     trace: options.traceGate ? evaluateTraceGate(currentWeights, candidateWeights, seeds, options, trace) : undefined,
+    decisionTrace: options.decisionTraceGate
+      ? evaluateDecisionTraceGate(currentWeights, candidateWeights, seeds, options, decisionTrace)
+      : undefined,
     seeds: seedResults
   };
 }
@@ -482,6 +509,32 @@ function evaluateTraceGate(
     current,
     candidate,
     delta: compareRuntimeTraces(candidate, current)
+  };
+}
+
+function evaluateDecisionTraceGate(
+  currentWeights: NeuralWeights,
+  candidateWeights: NeuralWeights,
+  seeds: readonly number[],
+  options: PolicyGradientSearchOptions,
+  decisionTrace: ((weights: NeuralWeights, options: RuntimeEvaluationOptions & { seeds?: readonly number[] }) => RuntimeDecisionSearchTrace) | undefined
+): PolicyGradientSearchDecisionTraceGate {
+  const traceDecisions = decisionTrace ?? (() => {
+    throw new Error('Decision trace gate requires a trace dependency or a runtime decision trace implementation');
+  });
+  const traceOptions = {
+    seeds,
+    matches: options.gateMatches,
+    frames: options.gateFrames
+  };
+  const current = traceDecisions(currentWeights, traceOptions);
+  const candidate = traceDecisions(candidateWeights, traceOptions);
+  const comparison = compareRuntimeDecisionTraces(candidate.decisions, current.decisions);
+  return {
+    currentDecisionCount: current.decisions.length,
+    candidateDecisionCount: candidate.decisions.length,
+    comparison,
+    lowPressureForwardLossDivergences: lowPressureForwardLossDivergences(comparison)
   };
 }
 
@@ -537,6 +590,7 @@ function deltaEvaluation(
 function compareRows(a: PolicyGradientSearchRow, b: PolicyGradientSearchRow): number {
   return promotionSafeRank(b) - promotionSafeRank(a) ||
     standardTraceSafetyRank(b) - standardTraceSafetyRank(a) ||
+    standardDecisionTraceSafetyRank(b) - standardDecisionTraceSafetyRank(a) ||
     b.holdout.delta.score - a.holdout.delta.score ||
     b.holdout.delta.goalDiff - a.holdout.delta.goalDiff ||
     b.holdout.delta.winProxy - a.holdout.delta.winProxy ||
@@ -547,6 +601,23 @@ function compareRows(a: PolicyGradientSearchRow, b: PolicyGradientSearchRow): nu
     b.standard.delta.goalDiff - a.standard.delta.goalDiff ||
     b.standard.delta.winProxy - a.standard.delta.winProxy ||
     b.standard.delta.ballProgress - a.standard.delta.ballProgress;
+}
+
+function standardDecisionTraceSafetyRank(row: PolicyGradientSearchRow): number {
+  return (row.standard.decisionTrace?.lowPressureForwardLossDivergences ?? 0) === 0 ? 1 : 0;
+}
+
+function lowPressureForwardLossDivergences(comparison: RuntimeDecisionTraceComparison): number {
+  return comparison.firstFinalActionDivergences.filter((divergence) =>
+    divergence.currentFinalActionIndex === 8 &&
+    divergence.currentRawPolicyActionIndex === 8 &&
+    divergence.candidateFinalActionIndex !== 8 &&
+    divergence.staminaRatio > 0.5 &&
+    divergence.finishingPressure < 0.2 &&
+    divergence.ownGoalPressure < 0.2 &&
+    divergence.attackCornerPressure < 0.2 &&
+    divergence.ownCornerPressure < 0.2
+  ).length;
 }
 
 function traceVisibilityRank(gate: PolicyGradientSearchGate): number {
@@ -597,6 +668,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestHoldoutWinDelta: result.best.holdout.delta.winProxy,
     bestStandardFinalActionChangeRate: result.best.standard.trace?.delta.finalActionDistributionChangeRate,
     bestHoldoutFinalActionChangeRate: result.best.holdout.trace?.delta.finalActionDistributionChangeRate,
+    bestStandardLowPressureForwardLossDivergences: result.best.standard.decisionTrace?.lowPressureForwardLossDivergences,
+    bestHoldoutLowPressureForwardLossDivergences: result.best.holdout.decisionTrace?.lowPressureForwardLossDivergences,
     bestLearningRate: result.best.variant.learningRate,
     bestEpochs: result.best.variant.epochs,
     bestPpoClip: result.best.variant.ppoClip,

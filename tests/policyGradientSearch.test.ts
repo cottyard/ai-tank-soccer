@@ -6,9 +6,10 @@ import {
   parsePolicyGradientSearchArgs,
   runPolicyGradientSearch,
   type PolicyGradientSearchEvaluation,
-  type PolicyGradientSearchTrace
+  type PolicyGradientSearchTrace,
+  type RuntimeDecisionSearchTrace
 } from '../scripts/search-policy-gradient';
-import type { RuntimeTraceSummary } from '../src/ai/policyGate';
+import type { RuntimeDecisionTraceRun, RuntimeTraceSummary } from '../src/ai/policyGate';
 import { serializeWeightsPayload } from '../scripts/coach-neural';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 
@@ -868,6 +869,84 @@ describe('policy-gradient promotion search', () => {
       holdout: { trace: { delta: { finalActionDistributionChangeRate: 0.12 } } }
     });
   });
+
+  it('keeps candidates with low-pressure forward-loss first divergences behind decision-trace-safe rows', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-decision-trace-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '69',
+        '--learning-rates',
+        '0.001,0.0005',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--trace-gate',
+        '--decision-trace-gate'
+      ]),
+      standardSeeds: [31],
+      holdoutSeeds: [97],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        const score = training.learningRate === 0.001 ? 12 : 11;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: identicalGateScore,
+      trace: actionVisibilityTrace,
+      decisionTrace: lowPressureForwardLossDecisionTrace
+    });
+
+    expect(result.best.variant.learningRate).toBe(0.0005);
+    expect(result.rows[0].standard.decisionTrace?.lowPressureForwardLossDivergences).toBe(0);
+    expect(result.rows[1]).toMatchObject({
+      variant: { learningRate: 0.001 },
+      standard: {
+        decisionTrace: {
+          lowPressureForwardLossDivergences: 1,
+          comparison: {
+            firstFinalActionDivergences: [
+              expect.objectContaining({
+                currentFinalActionIndex: 8,
+                candidateFinalActionIndex: 7
+              })
+            ]
+          }
+        }
+      }
+    });
+
+    const summary = JSON.parse(readFileSync(result.summaryPath, 'utf8'));
+    expect(summary.rows[1].standard.decisionTrace.lowPressureForwardLossDivergences).toBe(1);
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestStandardLowPressureForwardLossDivergences: 0
+    });
+  });
 });
 
 function scoredWeights(score: number): number[] {
@@ -924,6 +1003,47 @@ function staminaRiskTrace(weights: readonly number[], options: { seeds?: readonl
   return {
     ...traceFixture(isHoldout ? [38, 50, 12, 0, 0, 0, 0, 0, 0] : [50, 50, 0, 0, 0, 0, 0, 0, 0]),
     staminaConserves: isHoldout ? 0 : 20
+  };
+}
+
+function lowPressureForwardLossDecisionTrace(
+  weights: readonly number[],
+  options: { seeds?: readonly number[] }
+): RuntimeDecisionSearchTrace {
+  const seed = options.seeds?.[0] ?? 31;
+  const action = weights[0] === 12 ? 7 : 8;
+  return decisionTraceFixture(seed, action);
+}
+
+function decisionTraceFixture(seed: number, finalActionIndex: number): RuntimeDecisionTraceRun {
+  return {
+    summary: traceFixture([0, 0, 0, 0, 0, 0, 0, finalActionIndex === 7 ? 1 : 0, finalActionIndex === 8 ? 1 : 0]),
+    decisions: [{
+      seed,
+      match: 0,
+      controlledTeam: 'red',
+      team: 'red',
+      tankId: 'red-0',
+      decisionIndex: 0,
+      frame: 18,
+      rawPolicyActionIndex: finalActionIndex,
+      policyActionIndex: finalActionIndex,
+      tacticalActionIndex: finalActionIndex,
+      finalActionIndex,
+      tacticalRolloutUsed: false,
+      tacticalRolloutChanged: false,
+      staminaConserved: false,
+      criticalStaminaRegulated: false,
+      flatPolicy: false,
+      staminaRatio: 0.88,
+      ballDistance: 225,
+      ballSpeed: 28,
+      finishingPressure: 0.11,
+      ownGoalPressure: 0.09,
+      sideWallPressure: 0,
+      attackCornerPressure: 0,
+      ownCornerPressure: 0
+    }]
   };
 }
 
