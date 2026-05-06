@@ -36,6 +36,7 @@ export type PolicyGradientSearchVariant = {
   openStartRatio?: number;
   advantageBaseline: PolicyGradientCliOptions['advantageBaseline'];
   runtimeWrapperMode: RuntimeWrapperSearchMode;
+  runtimeTacticalRewriteWeight: number;
   opponentMode: PolicyGradientCliOptions['opponentMode'];
 };
 
@@ -87,6 +88,7 @@ export type PolicyGradientSearchOptions = {
   actionMode: string;
   runtimeSurvivorsOnly: boolean;
   runtimeWrapperWeightMode: PolicyGradientCliOptions['runtimeWrapperWeightMode'];
+  runtimeTacticalRewriteWeight: number;
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
@@ -104,6 +106,7 @@ export type PolicyGradientSearchOptions = {
     openStartRatios: Array<number | undefined>;
     advantageBaselines: PolicyGradientCliOptions['advantageBaseline'][];
     runtimeWrapperModes: RuntimeWrapperSearchMode[];
+    runtimeTacticalRewriteWeights: number[];
     opponentModes: PolicyGradientCliOptions['opponentMode'][];
   };
   variants: PolicyGradientSearchVariant[];
@@ -144,6 +147,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const opponentMode = opponentModeArg(argv, '--opponent-mode', DEFAULT_OPPONENT_MODES[0]);
   const runtimeSurvivorsOnly = argv.includes('--runtime-survivors-only');
   const runtimeWrapperWeightMode = runtimeWrapperWeightModeArg(argv, '--runtime-wrapper-weight-mode', 'none');
+  const runtimeTacticalRewriteWeight = clamp01(numberArg(argv, '--runtime-tactical-rewrite-weight', 0.5));
   const grid = {
     trainingSeeds: seedListArg(argv, '--training-seeds', [seed]),
     learningRates: numberListArg(argv, '--learning-rates', [0.001, 0.0008, 0.0006]),
@@ -156,6 +160,9 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     runtimeWrapperModes: runtimeWrapperModeListArg(argv, '--runtime-wrapper-modes', [
       runtimeWrapperSearchMode(runtimeSurvivorsOnly, runtimeWrapperWeightMode)
     ]),
+    runtimeTacticalRewriteWeights: numberListArg(argv, '--runtime-tactical-rewrite-weights', [runtimeTacticalRewriteWeight])
+      .map(clamp01)
+      .filter((value, index, values) => values.indexOf(value) === index),
     opponentModes: opponentModeListArg(argv, '--opponent-modes', [opponentMode])
   };
   const variants = expandVariants(grid);
@@ -182,6 +189,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     actionMode,
     runtimeSurvivorsOnly,
     runtimeWrapperWeightMode,
+    runtimeTacticalRewriteWeight,
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
@@ -199,6 +207,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       actionMode,
       runtimeSurvivorsOnly,
       runtimeWrapperWeightMode,
+      runtimeTacticalRewriteWeight,
       opponentMode
     }),
     grid,
@@ -228,7 +237,12 @@ export function runPolicyGradientSearch(
       variant.openStartRatio === undefined ? undefined : `open${slugNumber(variant.openStartRatio)}`,
       `baseline${slugText(variant.advantageBaseline)}`,
       `opp${slugText(variant.opponentMode)}`,
-      options.grid.runtimeWrapperModes.length > 1 ? `wrap${runtimeWrapperModeSlug(variant.runtimeWrapperMode)}` : undefined
+      options.grid.runtimeWrapperModes.length > 1 || options.grid.runtimeTacticalRewriteWeights.length > 1
+        ? `wrap${runtimeWrapperModeSlug(variant.runtimeWrapperMode)}`
+        : undefined,
+      variant.runtimeWrapperMode === 'tactical-downweight' && options.grid.runtimeTacticalRewriteWeights.length > 1
+        ? `tacw${slugNumber(variant.runtimeTacticalRewriteWeight)}`
+        : undefined
     ].filter((part): part is string => part !== undefined).join('-');
     const candidatePath = join(options.outputDir, `${variantId}.json`);
     const candidateMetricsPath = join(options.outputDir, `${variantId}-metrics.json`);
@@ -247,6 +261,7 @@ export function runPolicyGradientSearch(
       advantageBaseline: variant.advantageBaseline,
       runtimeSurvivorsOnly: variant.runtimeWrapperMode === 'runtime-survivors-only',
       runtimeWrapperWeightMode: variant.runtimeWrapperMode === 'tactical-downweight' ? 'tactical-downweight' : 'none',
+      runtimeTacticalRewriteWeight: variant.runtimeTacticalRewriteWeight,
       opponentMode: variant.opponentMode
     };
 
@@ -331,6 +346,7 @@ function parseTrainingOptions(
     actionMode: string;
     runtimeSurvivorsOnly: boolean;
     runtimeWrapperWeightMode: PolicyGradientCliOptions['runtimeWrapperWeightMode'];
+    runtimeTacticalRewriteWeight: number;
     opponentMode: string;
   }
 ): PolicyGradientCliOptions {
@@ -365,6 +381,8 @@ function parseTrainingOptions(
     ...(base.runtimeSurvivorsOnly ? ['--runtime-survivors-only'] : []),
     '--runtime-wrapper-weight-mode',
     base.runtimeWrapperWeightMode,
+    '--runtime-tactical-rewrite-weight',
+    String(base.runtimeTacticalRewriteWeight),
     '--opponent-mode',
     base.opponentMode,
     '--league-current-weight',
@@ -572,7 +590,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestRuntimeWrapperMode: result.best.variant.runtimeWrapperMode,
     runtimeSurvivorsOnly: result.best.training.runtimeSurvivorsOnly,
     bestOpponentMode: result.best.variant.opponentMode,
-    runtimeWrapperWeightMode: result.best.training.runtimeWrapperWeightMode
+    runtimeWrapperWeightMode: result.best.training.runtimeWrapperWeightMode,
+    bestRuntimeTacticalRewriteWeight: result.best.variant.runtimeTacticalRewriteWeight
   })}\n`, 'utf8');
 }
 
@@ -586,6 +605,7 @@ function expandVariants(grid: {
   openStartRatios: readonly (number | undefined)[];
   advantageBaselines: readonly PolicyGradientCliOptions['advantageBaseline'][];
   runtimeWrapperModes: readonly RuntimeWrapperSearchMode[];
+  runtimeTacticalRewriteWeights: readonly number[];
   opponentModes: readonly PolicyGradientCliOptions['opponentMode'][];
 }): PolicyGradientSearchVariant[] {
   const variants: PolicyGradientSearchVariant[] = [];
@@ -599,19 +619,25 @@ function expandVariants(grid: {
               for (const openStartRatio of openStartRatios) {
                 for (const advantageBaseline of grid.advantageBaselines) {
                   for (const runtimeWrapperMode of grid.runtimeWrapperModes) {
-                    for (const opponentMode of grid.opponentModes) {
-                      variants.push({
-                        trainingSeed,
-                        learningRate,
-                        epochs,
-                        ppoClip,
-                        temperature,
-                        startStateMode,
-                        openStartRatio,
-                        advantageBaseline,
-                        runtimeWrapperMode,
-                        opponentMode
-                      });
+                    const rewriteWeights = runtimeWrapperMode === 'tactical-downweight'
+                      ? grid.runtimeTacticalRewriteWeights
+                      : [0.5];
+                    for (const runtimeTacticalRewriteWeight of rewriteWeights) {
+                      for (const opponentMode of grid.opponentModes) {
+                        variants.push({
+                          trainingSeed,
+                          learningRate,
+                          epochs,
+                          ppoClip,
+                          temperature,
+                          startStateMode,
+                          openStartRatio,
+                          advantageBaseline,
+                          runtimeWrapperMode,
+                          runtimeTacticalRewriteWeight,
+                          opponentMode
+                        });
+                      }
                     }
                   }
                 }

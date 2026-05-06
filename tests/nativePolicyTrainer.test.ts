@@ -489,28 +489,37 @@ describe('native policy trainer', () => {
       '--metrics-output',
       weightedMetricsOutput,
       '--runtime-wrapper-weight-mode',
-      'tactical-downweight'
+      'tactical-downweight',
+      '--runtime-tactical-rewrite-weight',
+      '0.2'
     ]));
 
     const defaultMetrics = JSON.parse(readFileSync(defaultMetricsOutput, 'utf8')) as {
       runtimeWrapperWeightMode?: string;
+      runtimeTacticalRewriteWeight?: number;
       samples: number;
       policyActionSurvival?: { tacticalChanged: number };
     };
     const weightedMetrics = JSON.parse(readFileSync(weightedMetricsOutput, 'utf8')) as {
       runtimeWrapperWeightMode?: string;
+      runtimeTacticalRewriteWeight?: number;
       samples: number;
       policyActionSurvival?: { tacticalChanged: number };
     };
     const weightedOutput = JSON.parse(readFileSync(weightedOutputWeights, 'utf8')) as {
-      metadata?: { runtimeWrapperWeightMode?: string };
+      metadata?: { runtimeWrapperWeightMode?: string; runtimeTacticalRewriteWeight?: number };
+      weights: number[];
     };
 
     expect(defaultMetrics.runtimeWrapperWeightMode).toBe('none');
     expect(weightedMetrics.runtimeWrapperWeightMode).toBe('tactical-downweight');
+    expect(weightedMetrics.runtimeTacticalRewriteWeight).toBe(0.2);
     expect(weightedOutput.metadata?.runtimeWrapperWeightMode).toBe('tactical-downweight');
+    expect(weightedOutput.metadata?.runtimeTacticalRewriteWeight).toBe(0.2);
     expect(weightedMetrics.policyActionSurvival?.tacticalChanged).toBeGreaterThan(0);
     expect(weightedMetrics.samples).toBe(defaultMetrics.samples);
+    const defaultOutput = JSON.parse(readFileSync(defaultOutputWeights, 'utf8')) as { weights: number[] };
+    expect(totalDelta(weightedOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
   });
 
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {

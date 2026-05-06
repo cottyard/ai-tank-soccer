@@ -153,6 +153,7 @@ struct Options {
     action_mode: ActionMode,
     runtime_survivors_only: bool,
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
+    runtime_tactical_rewrite_weight: f64,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -258,6 +259,7 @@ struct TrainingResult {
     action_mode: ActionMode,
     runtime_survivors_only: bool,
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
+    runtime_tactical_rewrite_weight: f64,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -399,6 +401,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         action_mode: ActionMode::Raw,
         runtime_survivors_only: false,
         runtime_wrapper_weight_mode: RuntimeWrapperWeightMode::None,
+        runtime_tactical_rewrite_weight: 0.5,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -479,6 +482,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
                     "tactical-downweight" => RuntimeWrapperWeightMode::TacticalDownweight,
                     _ => return Err(format!("Unknown runtime wrapper weight mode: {value}").into()),
                 }
+            }
+            "--runtime-tactical-rewrite-weight" => {
+                options.runtime_tactical_rewrite_weight = clamp01(value.parse::<f64>()?)
             }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
@@ -628,6 +634,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         action_mode: options.action_mode,
         runtime_survivors_only: options.runtime_survivors_only,
         runtime_wrapper_weight_mode: options.runtime_wrapper_weight_mode,
+        runtime_tactical_rewrite_weight: options.runtime_tactical_rewrite_weight,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -816,7 +823,11 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
             if options.runtime_survivors_only && decision.sampled_action != decision.action {
                 return None;
             }
-            let wrapper_weight = runtime_wrapper_sample_weight(&decision, options.runtime_wrapper_weight_mode);
+            let wrapper_weight = runtime_wrapper_sample_weight(
+                &decision,
+                options.runtime_wrapper_weight_mode,
+                options.runtime_tactical_rewrite_weight,
+            );
             Some(Sample {
                 inputs: decision.inputs,
                 action: decision.action,
@@ -843,12 +854,13 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
 fn runtime_wrapper_sample_weight(
     decision: &PendingDecision,
     mode: RuntimeWrapperWeightMode,
+    tactical_rewrite_weight: f64,
 ) -> f64 {
     match mode {
         RuntimeWrapperWeightMode::None => 1.0,
         RuntimeWrapperWeightMode::TacticalDownweight => {
             if decision.tactical_changed {
-                0.5
+                tactical_rewrite_weight
             } else {
                 1.0
             }
@@ -1081,7 +1093,7 @@ fn train_batch(
     for &sample_index in order {
         let sample = &samples[sample_index];
         let sample_weight = if policy_gradient {
-            sample.advantage.abs()
+            sample.weight
         } else {
             sample.weight
         };
@@ -3499,6 +3511,10 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             runtime_wrapper_weight_mode_name(options.runtime_wrapper_weight_mode)
         ));
         output.push_str(&format!(
+            ",\n    \"runtimeTacticalRewriteWeight\": {}",
+            options.runtime_tactical_rewrite_weight
+        ));
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3540,6 +3556,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"actionMode\": \"{}\",\n",
             "  \"runtimeSurvivorsOnly\": {},\n",
             "  \"runtimeWrapperWeightMode\": \"{}\",\n",
+            "  \"runtimeTacticalRewriteWeight\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
@@ -3590,6 +3607,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         },
         result.runtime_survivors_only,
         runtime_wrapper_weight_mode_name(result.runtime_wrapper_weight_mode),
+        result.runtime_tactical_rewrite_weight,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",

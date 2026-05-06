@@ -58,6 +58,8 @@ describe('policy-gradient promotion search', () => {
       'tactical-downweight',
       '--runtime-wrapper-modes',
       'none,runtime-survivors-only,tactical-downweight',
+      '--runtime-tactical-rewrite-weights',
+      '0.5,0.2',
       '--opponent-modes',
       'self,league'
     ]);
@@ -91,10 +93,11 @@ describe('policy-gradient promotion search', () => {
         openStartRatios: [0.25, 0.5],
         advantageBaselines: ['start-team-time', 'learned'],
         runtimeWrapperModes: ['none', 'runtime-survivors-only', 'tactical-downweight'],
+        runtimeTacticalRewriteWeights: [0.5, 0.2],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(576);
+    expect(options.variants).toHaveLength(768);
   });
 
   it('searches runtime wrapper handling modes as a variant dimension', () => {
@@ -178,6 +181,89 @@ describe('policy-gradient promotion search', () => {
       bestRuntimeWrapperMode: 'runtime-survivors-only',
       runtimeSurvivorsOnly: true,
       runtimeWrapperWeightMode: 'none'
+    });
+  });
+
+  it('searches tactical rewrite weights only for tactical-downweight variants', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-tactical-weight-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      runtimeWrapperWeightMode: string;
+      runtimeTacticalRewriteWeight: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '61',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--runtime-wrapper-modes',
+        'none,runtime-survivors-only,tactical-downweight',
+        '--runtime-tactical-rewrite-weights',
+        '0.5,0.2'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          runtimeWrapperWeightMode: training.runtimeWrapperWeightMode,
+          runtimeTacticalRewriteWeight: training.runtimeTacticalRewriteWeight,
+          output: training.output
+        });
+        const score = training.runtimeWrapperWeightMode === 'tactical-downweight'
+          ? 10 + training.runtimeTacticalRewriteWeight
+          : 10;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(4);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ runtimeWrapperWeightMode: 'none', runtimeTacticalRewriteWeight: 0.5 }),
+      expect.objectContaining({ runtimeWrapperWeightMode: 'none', runtimeTacticalRewriteWeight: 0.5 }),
+      expect.objectContaining({ runtimeWrapperWeightMode: 'tactical-downweight', runtimeTacticalRewriteWeight: 0.5 }),
+      expect.objectContaining({ runtimeWrapperWeightMode: 'tactical-downweight', runtimeTacticalRewriteWeight: 0.2 })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-wrapnone.json'),
+      expect.stringContaining('-wrapsurvivors.json'),
+      expect.stringContaining('-wraptactical-downweight-tacw0p5.json'),
+      expect.stringContaining('-wraptactical-downweight-tacw0p2.json')
+    ]);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestRuntimeTacticalRewriteWeight: 0.5
     });
   });
 

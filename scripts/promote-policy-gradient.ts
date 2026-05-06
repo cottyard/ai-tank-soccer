@@ -257,6 +257,8 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     ...(argv.includes('--runtime-survivors-only') ? ['--runtime-survivors-only'] : []),
     '--runtime-wrapper-weight-mode',
     stringArg(argv, '--runtime-wrapper-weight-mode') ?? 'none',
+    '--runtime-tactical-rewrite-weight',
+    stringArg(argv, '--runtime-tactical-rewrite-weight') ?? '0.5',
     '--opponent-mode',
     stringArg(argv, '--opponent-mode') ?? 'league',
     '--league-current-weight',
@@ -456,6 +458,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     actionMode: result.training.actionMode,
     runtimeSurvivorsOnly: result.training.runtimeSurvivorsOnly,
     runtimeWrapperWeightMode: result.training.runtimeWrapperWeightMode,
+    runtimeTacticalRewriteWeight: result.training.runtimeTacticalRewriteWeight,
     matches: result.training.matches,
     frames: result.training.frames,
     epochs: result.training.epochs,
@@ -497,6 +500,11 @@ function trainingFromCandidateMetadata(
     actionMode: actionModeMetadata(metadata, fallback.actionMode),
     runtimeSurvivorsOnly: booleanMetadata(metadata, 'runtimeSurvivorsOnly', fallback.runtimeSurvivorsOnly),
     runtimeWrapperWeightMode: runtimeWrapperWeightModeMetadata(metadata, fallback.runtimeWrapperWeightMode),
+    runtimeTacticalRewriteWeight: finiteMetadataNumber(
+      metadata,
+      'runtimeTacticalRewriteWeight',
+      fallback.runtimeTacticalRewriteWeight
+    ),
     opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
   };
 }
