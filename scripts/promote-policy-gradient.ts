@@ -261,6 +261,8 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     stringArg(argv, '--runtime-tactical-rewrite-weight') ?? '0.5',
     '--action-retention-weight',
     stringArg(argv, '--action-retention-weight') ?? '0',
+    '--early-forward-safety-weight',
+    stringArg(argv, '--early-forward-safety-weight') ?? '1',
     '--opponent-mode',
     stringArg(argv, '--opponent-mode') ?? 'league',
     '--league-current-weight',
@@ -462,6 +464,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     runtimeWrapperWeightMode: result.training.runtimeWrapperWeightMode,
     runtimeTacticalRewriteWeight: result.training.runtimeTacticalRewriteWeight,
     actionRetentionWeight: result.training.actionRetentionWeight,
+    earlyForwardSafetyWeight: result.training.earlyForwardSafetyWeight,
     matches: result.training.matches,
     frames: result.training.frames,
     epochs: result.training.epochs,
@@ -509,6 +512,11 @@ function trainingFromCandidateMetadata(
       fallback.runtimeTacticalRewriteWeight
     ),
     actionRetentionWeight: finiteMetadataNumber(metadata, 'actionRetentionWeight', fallback.actionRetentionWeight),
+    earlyForwardSafetyWeight: finiteMetadataNumber(
+      metadata,
+      'earlyForwardSafetyWeight',
+      fallback.earlyForwardSafetyWeight
+    ),
     opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
   };
 }

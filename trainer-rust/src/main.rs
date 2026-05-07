@@ -156,6 +156,7 @@ struct Options {
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
     runtime_tactical_rewrite_weight: f64,
     action_retention_weight: f64,
+    early_forward_safety_weight: f64,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -230,6 +231,7 @@ struct PendingDecision {
     tactical_changed: bool,
     stamina_conserved: bool,
     critical_regulated: bool,
+    early_forward_safety: bool,
 }
 
 struct Collection {
@@ -237,6 +239,7 @@ struct Collection {
     decisions: usize,
     policy_action_survival: PolicyActionSurvival,
     runtime_decision_outcomes: RuntimeDecisionOutcomes,
+    early_forward_safety: EarlyForwardSafetySummary,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -252,6 +255,7 @@ struct TrainingResult {
     decisions: usize,
     policy_action_survival: PolicyActionSurvival,
     runtime_decision_outcomes: RuntimeDecisionOutcomes,
+    early_forward_safety: EarlyForwardSafetySummary,
     start_families: StartFamilyCounts,
     frames: usize,
     red_goals: i32,
@@ -264,6 +268,7 @@ struct TrainingResult {
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
     runtime_tactical_rewrite_weight: f64,
     action_retention_weight: f64,
+    early_forward_safety_weight: f64,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -301,6 +306,13 @@ struct RuntimeDecisionOutcomes {
     tactical_changed: RuntimeDecisionOutcomeStats,
     stamina_conserved: RuntimeDecisionOutcomeStats,
     critical_regulated: RuntimeDecisionOutcomeStats,
+}
+
+#[derive(Clone, Copy)]
+struct EarlyForwardSafetySummary {
+    candidates: usize,
+    weighted: usize,
+    weight: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -407,6 +419,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         runtime_wrapper_weight_mode: RuntimeWrapperWeightMode::None,
         runtime_tactical_rewrite_weight: 0.5,
         action_retention_weight: 0.0,
+        early_forward_safety_weight: 1.0,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -493,6 +506,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
             }
             "--action-retention-weight" => {
                 options.action_retention_weight = value.parse::<f64>()?.max(0.0)
+            }
+            "--early-forward-safety-weight" => {
+                options.early_forward_safety_weight = clamp01(value.parse::<f64>()?)
             }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
@@ -633,6 +649,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         decisions: collection.decisions,
         policy_action_survival: collection.policy_action_survival,
         runtime_decision_outcomes: collection.runtime_decision_outcomes,
+        early_forward_safety: collection.early_forward_safety,
         start_families: collection.start_families,
         frames: collection.frames,
         red_goals: collection.red_goals,
@@ -645,6 +662,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         runtime_wrapper_weight_mode: options.runtime_wrapper_weight_mode,
         runtime_tactical_rewrite_weight: options.runtime_tactical_rewrite_weight,
         action_retention_weight: options.action_retention_weight,
+        early_forward_safety_weight: options.early_forward_safety_weight,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -823,6 +841,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     let policy_action_survival = summarize_policy_action_survival(&all_decisions);
     let advantages = normalized_advantages(&all_decisions, options.advantage_baseline);
     let runtime_decision_outcomes = summarize_runtime_decision_outcomes(&all_decisions, &advantages);
+    let early_forward_safety = summarize_early_forward_safety(&all_decisions, options.early_forward_safety_weight);
     let samples = all_decisions
         .into_iter()
         .zip(advantages)
@@ -838,10 +857,14 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                 options.runtime_wrapper_weight_mode,
                 options.runtime_tactical_rewrite_weight,
             );
+            let forward_safety_weight = early_forward_safety_sample_weight(
+                &decision,
+                options.early_forward_safety_weight,
+            );
             Some(Sample {
                 inputs: decision.inputs,
                 action: decision.action,
-                weight: advantage.abs() * wrapper_weight,
+                weight: advantage.abs() * wrapper_weight * forward_safety_weight,
                 advantage,
                 old_probability: Some(decision.probability),
                 old_probabilities: Some(decision.probabilities),
@@ -854,6 +877,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
         decisions: decision_count,
         policy_action_survival,
         runtime_decision_outcomes,
+        early_forward_safety,
         start_families,
         frames: completed_frames,
         red_goals,
@@ -876,6 +900,33 @@ fn runtime_wrapper_sample_weight(
                 1.0
             }
         }
+    }
+}
+
+fn early_forward_safety_sample_weight(decision: &PendingDecision, early_forward_safety_weight: f64) -> f64 {
+    if decision.early_forward_safety {
+        early_forward_safety_weight
+    } else {
+        1.0
+    }
+}
+
+fn summarize_early_forward_safety(
+    decisions: &[(PendingDecision, f64)],
+    early_forward_safety_weight: f64,
+) -> EarlyForwardSafetySummary {
+    let candidates = decisions
+        .iter()
+        .filter(|(decision, _)| decision.trainable && decision.early_forward_safety)
+        .count();
+    EarlyForwardSafetySummary {
+        candidates,
+        weighted: if early_forward_safety_weight < 1.0 {
+            candidates
+        } else {
+            0
+        },
+        weight: early_forward_safety_weight,
     }
 }
 
@@ -1128,8 +1179,9 @@ fn train_batch(
                 total_weight += sample_weight;
                 continue;
             }
-            total_loss += -sample.advantage * probs[sample.action].max(1e-12).ln();
-            sample.advantage
+            let weighted_advantage = sample.advantage.signum() * sample_weight;
+            total_loss += -weighted_advantage * probs[sample.action].max(1e-12).ln();
+            weighted_advantage
         } else {
             total_loss += -probs[sample.action].max(1e-12).ln() * sample_weight;
             sample_weight
@@ -1237,6 +1289,14 @@ fn sample_team_decision(
     };
     let executed_action = runtime_result.action;
     let probability = probabilities[executed_action].max(1e-9);
+    let pressures = pressure_signals(state, team);
+    let early_forward_safety = is_early_low_pressure_forward_decision(
+        state.frame,
+        sampled_action,
+        executed_action,
+        tank,
+        pressures,
+    );
 
     (
         action_index_to_command(executed_action),
@@ -1253,8 +1313,26 @@ fn sample_team_decision(
             tactical_changed: runtime_result.tactical_changed,
             stamina_conserved: runtime_result.stamina_conserved,
             critical_regulated: runtime_result.critical_regulated,
+            early_forward_safety,
         }),
     )
+}
+
+fn is_early_low_pressure_forward_decision(
+    match_frame: usize,
+    sampled_action: usize,
+    executed_action: usize,
+    tank: &Tank,
+    pressures: PressureSignals,
+) -> bool {
+    match_frame <= PHYSICS_HZ * 4
+        && sampled_action == 8
+        && executed_action == 8
+        && stamina_ratio(tank) > 0.5
+        && pressures.finishing < 0.2
+        && pressures.own_goal < 0.2
+        && pressures.attack_corner < 0.2
+        && pressures.own_corner < 0.2
 }
 
 fn runtime_action_result(
@@ -3557,6 +3635,10 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             options.action_retention_weight
         ));
         output.push_str(&format!(
+            ",\n    \"earlyForwardSafetyWeight\": {}",
+            options.early_forward_safety_weight
+        ));
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3600,6 +3682,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"runtimeWrapperWeightMode\": \"{}\",\n",
             "  \"runtimeTacticalRewriteWeight\": {},\n",
             "  \"actionRetentionWeight\": {},\n",
+            "  \"earlyForwardSafetyWeight\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
@@ -3612,6 +3695,11 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "    \"staminaConserved\": {},\n",
             "    \"criticalRegulated\": {},\n",
             "    \"survivalRate\": {:.17}\n",
+            "  }},\n",
+            "  \"earlyForwardSafety\": {{\n",
+            "    \"candidates\": {},\n",
+            "    \"weighted\": {},\n",
+            "    \"weight\": {}\n",
             "  }},\n",
             "  \"runtimeDecisionOutcomes\": {{\n",
             "    \"survived\": {},\n",
@@ -3652,6 +3740,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         runtime_wrapper_weight_mode_name(result.runtime_wrapper_weight_mode),
         result.runtime_tactical_rewrite_weight,
         result.action_retention_weight,
+        result.early_forward_safety_weight,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",
@@ -3667,6 +3756,9 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.policy_action_survival.stamina_conserved,
         result.policy_action_survival.critical_regulated,
         policy_action_survival_rate(result.policy_action_survival),
+        result.early_forward_safety.candidates,
+        result.early_forward_safety.weighted,
+        result.early_forward_safety.weight,
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.survived),
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.changed),
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.tactical_changed),

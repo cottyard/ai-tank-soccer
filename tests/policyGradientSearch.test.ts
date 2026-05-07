@@ -63,6 +63,8 @@ describe('policy-gradient promotion search', () => {
       '0.5,0.2',
       '--action-retention-weights',
       '0,0.25',
+      '--early-forward-safety-weights',
+      '1,0.2',
       '--opponent-modes',
       'self,league'
     ]);
@@ -98,10 +100,85 @@ describe('policy-gradient promotion search', () => {
         runtimeWrapperModes: ['none', 'runtime-survivors-only', 'tactical-downweight'],
         runtimeTacticalRewriteWeights: [0.5, 0.2],
         actionRetentionWeights: [0, 0.25],
+        earlyForwardSafetyWeights: [1, 0.2],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(1536);
+    expect(options.variants).toHaveLength(3072);
+  });
+
+  it('searches early forward safety weights as a training-safety dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-forward-safety-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      earlyForwardSafetyWeight: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '71',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--early-forward-safety-weights',
+        '1,0.2'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          earlyForwardSafetyWeight: training.earlyForwardSafetyWeight,
+          output: training.output
+        });
+        const score = 10 + (1 - training.earlyForwardSafetyWeight);
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(2);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ earlyForwardSafetyWeight: 1 }),
+      expect.objectContaining({ earlyForwardSafetyWeight: 0.2 })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-earlyfwd1.json'),
+      expect.stringContaining('-earlyfwd0p2.json')
+    ]);
+    expect(result.best.variant.earlyForwardSafetyWeight).toBe(0.2);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestEarlyForwardSafetyWeight: 0.2
+    });
   });
 
   it('searches action-retention weights as a conservative policy-change dimension', () => {
