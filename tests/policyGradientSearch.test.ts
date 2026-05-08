@@ -195,6 +195,90 @@ describe('policy-gradient promotion search', () => {
     });
   });
 
+  it('searches sparse reward weights as an objective dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-rewards-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      goalReward: number;
+      winReward: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '74',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--goal-rewards',
+        '1,1.6',
+        '--win-rewards',
+        '1.4,2.2'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          goalReward: training.goalReward,
+          winReward: training.winReward,
+          output: training.output
+        });
+        const score = 10 + training.goalReward + training.winReward;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(4);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ goalReward: 1, winReward: 1.4 }),
+      expect.objectContaining({ goalReward: 1, winReward: 2.2 }),
+      expect.objectContaining({ goalReward: 1.6, winReward: 1.4 }),
+      expect.objectContaining({ goalReward: 1.6, winReward: 2.2 })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-goal1-win1p4-'),
+      expect.stringContaining('-goal1-win2p2-'),
+      expect.stringContaining('-goal1p6-win1p4-'),
+      expect.stringContaining('-goal1p6-win2p2-')
+    ]);
+    expect(result.best.variant.goalReward).toBe(1.6);
+    expect(result.best.variant.winReward).toBe(2.2);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestGoalReward: 1.6,
+      bestWinReward: 2.2
+    });
+  });
+
   it('searches early forward anchor weights as an accepted-policy anchor dimension', () => {
     const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-forward-anchor-'));
     const bestPath = join(workdir, 'best.json');

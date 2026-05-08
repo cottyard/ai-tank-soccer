@@ -32,6 +32,8 @@ export type PolicyGradientCliOptions = {
   ppoClip: number;
   temperature: number;
   discount: number;
+  goalReward: number;
+  winReward: number;
   startStateMode: PolicyGradientStartStateMode;
   openStartRatio?: number;
   advantageBaseline: PolicyGradientAdvantageBaseline;
@@ -62,6 +64,8 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   ppoClip: 0.2,
   temperature: 1.08,
   discount: 0.992,
+  goalReward: 1,
+  winReward: 1.4,
   startStateMode: 'outcome-curriculum',
   openStartRatio: undefined,
   advantageBaseline: 'global',
@@ -95,6 +99,8 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     ppoClip: Math.max(0, numberArg(argv, '--ppo-clip', DEFAULT_OPTIONS.ppoClip)),
     temperature: Math.max(0.05, numberArg(argv, '--temperature', DEFAULT_OPTIONS.temperature)),
     discount: clamp01(numberArg(argv, '--discount', DEFAULT_OPTIONS.discount)),
+    goalReward: numberArg(argv, '--goal-reward', DEFAULT_OPTIONS.goalReward),
+    winReward: numberArg(argv, '--win-reward', DEFAULT_OPTIONS.winReward),
     startStateMode: startStateModeArg(argv, '--start-state-mode', DEFAULT_OPTIONS.startStateMode),
     openStartRatio: optionalClamp01Arg(argv, '--open-start-ratio'),
     advantageBaseline: advantageBaselineArg(argv, '--advantage-baseline', DEFAULT_OPTIONS.advantageBaseline),
@@ -137,6 +143,8 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
     ppoClip: options.ppoClip,
     temperature: options.temperature,
     discount: options.discount,
+    goalReward: options.goalReward,
+    winReward: options.winReward,
     advantageBaseline: options.advantageBaseline,
     startStateMode: options.startStateMode,
     openStartRatio: options.openStartRatio,
@@ -152,7 +160,9 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
       seed: options.seed,
       replaySamples: 0,
       selfPlaySamples: result.samples,
-      loss: result.loss
+      loss: result.loss,
+      goalReward: options.goalReward,
+      winReward: options.winReward
     }), 'utf8');
   }
 
@@ -164,7 +174,9 @@ export function runPolicyGradientCli(options: PolicyGradientCliOptions): PolicyG
       frames: result.frames,
       redGoals: result.redGoals,
       blueGoals: result.blueGoals,
-      loss: result.loss
+      loss: result.loss,
+      goalReward: options.goalReward,
+      winReward: options.winReward
     }, null, 2)}\n`, 'utf8');
   }
 
@@ -204,6 +216,10 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     String(options.temperature),
     '--discount',
     String(options.discount),
+    '--goal-reward',
+    String(options.goalReward),
+    '--win-reward',
+    String(options.winReward),
     '--start-state-mode',
     options.startStateMode,
     '--advantage-baseline',

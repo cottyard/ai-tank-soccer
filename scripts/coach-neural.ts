@@ -107,6 +107,8 @@ export type WeightsMetadata = {
   replaySamples: number;
   selfPlaySamples: number;
   loss: number;
+  goalReward?: number;
+  winReward?: number;
   acceptOpponent?: AcceptOpponentName;
   gateSeeds?: number;
   runtimeGateMatches?: number;

@@ -272,6 +272,8 @@ struct TrainingResult {
     action_mode: ActionMode,
     runtime_survivors_only: bool,
     runtime_wrapper_weight_mode: RuntimeWrapperWeightMode,
+    goal_reward: f64,
+    win_reward: f64,
     runtime_tactical_rewrite_weight: f64,
     action_retention_weight: f64,
     early_forward_safety_weight: f64,
@@ -689,6 +691,8 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         action_mode: options.action_mode,
         runtime_survivors_only: options.runtime_survivors_only,
         runtime_wrapper_weight_mode: options.runtime_wrapper_weight_mode,
+        goal_reward: options.goal_reward,
+        win_reward: options.win_reward,
         runtime_tactical_rewrite_weight: options.runtime_tactical_rewrite_weight,
         action_retention_weight: options.action_retention_weight,
         early_forward_safety_weight: options.early_forward_safety_weight,
@@ -3700,6 +3704,8 @@ fn serialize_weights(
         output.push_str(&format!(",\n    \"ppoClip\": {}", options.ppo_clip));
         output.push_str(&format!(",\n    \"temperature\": {}", options.temperature));
         output.push_str(&format!(",\n    \"discount\": {}", options.discount));
+        output.push_str(&format!(",\n    \"goalReward\": {}", options.goal_reward));
+        output.push_str(&format!(",\n    \"winReward\": {}", options.win_reward));
         output.push_str(&format!(
             ",\n    \"startStateMode\": \"{}\"",
             match options.start_state_mode {
@@ -3813,6 +3819,8 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"actionMode\": \"{}\",\n",
             "  \"runtimeSurvivorsOnly\": {},\n",
             "  \"runtimeWrapperWeightMode\": \"{}\",\n",
+            "  \"goalReward\": {},\n",
+            "  \"winReward\": {},\n",
             "  \"runtimeTacticalRewriteWeight\": {},\n",
             "  \"actionRetentionWeight\": {},\n",
             "  \"earlyForwardSafetyWeight\": {},\n",
@@ -3876,6 +3884,8 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         },
         result.runtime_survivors_only,
         runtime_wrapper_weight_mode_name(result.runtime_wrapper_weight_mode),
+        result.goal_reward,
+        result.win_reward,
         result.runtime_tactical_rewrite_weight,
         result.action_retention_weight,
         result.early_forward_safety_weight,

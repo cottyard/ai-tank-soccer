@@ -189,6 +189,10 @@ describe('native policy trainer', () => {
         '1.08',
         '--discount',
         '0.992',
+        '--goal-reward',
+        '1.7',
+        '--win-reward',
+        '2.1',
         '--start-state-mode',
         'mixed',
         '--open-start-ratio',
@@ -233,6 +237,8 @@ describe('native policy trainer', () => {
         advantageBaseline?: string;
         actionMode?: string;
         runtimeWrapperWeightMode?: string;
+        goalReward?: number;
+        winReward?: number;
         opponentMode?: string;
       };
     };
@@ -242,6 +248,8 @@ describe('native policy trainer', () => {
     expect(nativeOutput.metadata?.advantageBaseline).toBe('learned');
     expect(nativeOutput.metadata?.actionMode).toBe('runtime');
     expect(nativeOutput.metadata?.runtimeWrapperWeightMode).toBe('none');
+    expect(nativeOutput.metadata?.goalReward).toBe(1.7);
+    expect(nativeOutput.metadata?.winReward).toBe(2.1);
     expect(nativeOutput.metadata?.opponentMode).toBe('traditional');
 
     const nativeMetrics = JSON.parse(readFileSync(firstMetrics, 'utf8')) as {
@@ -249,6 +257,8 @@ describe('native policy trainer', () => {
       openStartRatio?: number;
       actionMode?: string;
       runtimeWrapperWeightMode?: string;
+      goalReward?: number;
+      winReward?: number;
       opponentMode?: string;
       startFamilies?: Record<string, number>;
       policyActionSurvival?: {
@@ -275,6 +285,8 @@ describe('native policy trainer', () => {
     expect(nativeMetrics.openStartRatio).toBe(0.25);
     expect(nativeMetrics.actionMode).toBe('runtime');
     expect(nativeMetrics.runtimeWrapperWeightMode).toBe('none');
+    expect(nativeMetrics.goalReward).toBe(1.7);
+    expect(nativeMetrics.winReward).toBe(2.1);
     expect(nativeMetrics.opponentMode).toBe('traditional');
     expect(nativeMetrics.startFamilies).toMatchObject({
       open: 2,

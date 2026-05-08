@@ -37,6 +37,8 @@ export type PolicyGradientSearchVariant = {
   epochs: number;
   ppoClip: number;
   temperature: number;
+  goalReward: number;
+  winReward: number;
   startStateMode: PolicyGradientCliOptions['startStateMode'];
   openStartRatio?: number;
   advantageBaseline: PolicyGradientCliOptions['advantageBaseline'];
@@ -100,6 +102,8 @@ export type PolicyGradientSearchOptions = {
   frames: number;
   batchSize: number;
   discount: number;
+  goalReward: number;
+  winReward: number;
   startStateMode: string;
   advantageBaseline: string;
   actionMode: string;
@@ -125,6 +129,8 @@ export type PolicyGradientSearchOptions = {
     epochs: number[];
     ppoClips: number[];
     temperatures: number[];
+    goalRewards: number[];
+    winRewards: number[];
     startStateModes: PolicyGradientCliOptions['startStateMode'][];
     openStartRatios: Array<number | undefined>;
     advantageBaselines: PolicyGradientCliOptions['advantageBaseline'][];
@@ -169,6 +175,8 @@ const DEFAULT_HOLDOUT_SEEDS = [83, 97, 109, 127, 149];
 const DEFAULT_START_STATE_MODES: PolicyGradientCliOptions['startStateMode'][] = ['mixed'];
 const DEFAULT_ADVANTAGE_BASELINES: PolicyGradientCliOptions['advantageBaseline'][] = ['start-team-time'];
 const DEFAULT_OPPONENT_MODES: PolicyGradientCliOptions['opponentMode'][] = ['self'];
+const DEFAULT_GOAL_REWARD = 1;
+const DEFAULT_WIN_REWARD = 1.4;
 
 export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGradientSearchOptions {
   const seed = integerArg(argv, '--seed', DEFAULT_SEED);
@@ -184,12 +192,18 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const earlyForwardAnchorWeight = Math.max(0, numberArg(argv, '--early-forward-anchor-weight', 0));
   const policyAnchorData = stringArgs(argv, '--policy-anchor-data');
   const policyAnchorWeight = Math.max(0, numberArg(argv, '--policy-anchor-weight', 0));
+  const goalReward = numberArg(argv, '--goal-reward', DEFAULT_GOAL_REWARD);
+  const winReward = numberArg(argv, '--win-reward', DEFAULT_WIN_REWARD);
   const grid = {
     trainingSeeds: seedListArg(argv, '--training-seeds', [seed]),
     learningRates: numberListArg(argv, '--learning-rates', [0.001, 0.0008, 0.0006]),
     epochs: integerListArg(argv, '--epochs-list', [1, 2]),
     ppoClips: numberListArg(argv, '--ppo-clips', [0.08, 0.12, 0.16]),
     temperatures: numberListArg(argv, '--temperatures', [1, 1.1]),
+    goalRewards: numberListArg(argv, '--goal-rewards', [goalReward])
+      .filter((value, index, values) => values.indexOf(value) === index),
+    winRewards: numberListArg(argv, '--win-rewards', [winReward])
+      .filter((value, index, values) => values.indexOf(value) === index),
     startStateModes: startStateModeListArg(argv, '--start-state-modes', [startStateMode]),
     openStartRatios: optionalNumberListArg(argv, '--open-start-ratios', openStartRatio),
     advantageBaselines: advantageBaselineListArg(argv, '--advantage-baselines', [advantageBaseline]),
@@ -232,6 +246,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     frames,
     batchSize,
     discount,
+    goalReward,
+    winReward,
     startStateMode,
     advantageBaseline,
     actionMode,
@@ -256,6 +272,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       frames,
       batchSize,
       discount,
+      goalReward,
+      winReward,
       startStateMode,
       advantageBaseline,
       actionMode,
@@ -293,6 +311,12 @@ export function runPolicyGradientSearch(
       `e${variant.epochs}`,
       `clip${slugNumber(variant.ppoClip)}`,
       `t${slugNumber(variant.temperature)}`,
+      options.grid.goalRewards.length > 1 || variant.goalReward !== DEFAULT_GOAL_REWARD
+        ? `goal${slugNumber(variant.goalReward)}`
+        : undefined,
+      options.grid.winRewards.length > 1 || variant.winReward !== DEFAULT_WIN_REWARD
+        ? `win${slugNumber(variant.winReward)}`
+        : undefined,
       `start${slugText(variant.startStateMode)}`,
       variant.openStartRatio === undefined ? undefined : `open${slugNumber(variant.openStartRatio)}`,
       `baseline${slugText(variant.advantageBaseline)}`,
@@ -328,6 +352,8 @@ export function runPolicyGradientSearch(
       epochs: variant.epochs,
       ppoClip: variant.ppoClip,
       temperature: variant.temperature,
+      goalReward: variant.goalReward,
+      winReward: variant.winReward,
       startStateMode: variant.startStateMode,
       openStartRatio: variant.openStartRatio,
       advantageBaseline: variant.advantageBaseline,
@@ -400,6 +426,8 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     console.log(`bestEpochs=${result.best.variant.epochs}`);
     console.log(`bestPpoClip=${result.best.variant.ppoClip}`);
     console.log(`bestTemperature=${result.best.variant.temperature}`);
+    console.log(`bestGoalReward=${result.best.variant.goalReward}`);
+    console.log(`bestWinReward=${result.best.variant.winReward}`);
     console.log(`bestStartStateMode=${result.best.variant.startStateMode}`);
     console.log(`bestAdvantageBaseline=${result.best.variant.advantageBaseline}`);
     console.log(`bestOpponentMode=${result.best.variant.opponentMode}`);
@@ -424,6 +452,8 @@ function parseTrainingOptions(
     frames: number;
     batchSize: number;
     discount: number;
+    goalReward: number;
+    winReward: number;
     startStateMode: string;
     advantageBaseline: string;
     actionMode: string;
@@ -460,6 +490,10 @@ function parseTrainingOptions(
     '1.1',
     '--discount',
     String(base.discount),
+    '--goal-reward',
+    String(base.goalReward),
+    '--win-reward',
+    String(base.winReward),
     '--start-state-mode',
     base.startStateMode,
     '--advantage-baseline',
@@ -733,6 +767,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestEpochs: result.best.variant.epochs,
     bestPpoClip: result.best.variant.ppoClip,
     bestTemperature: result.best.variant.temperature,
+    bestGoalReward: result.best.variant.goalReward,
+    bestWinReward: result.best.variant.winReward,
     bestStartStateMode: result.best.variant.startStateMode,
     bestOpenStartRatio: result.best.variant.openStartRatio,
     bestAdvantageBaseline: result.best.variant.advantageBaseline,
@@ -754,6 +790,8 @@ function expandVariants(grid: {
   epochs: readonly number[];
   ppoClips: readonly number[];
   temperatures: readonly number[];
+  goalRewards: readonly number[];
+  winRewards: readonly number[];
   startStateModes: readonly PolicyGradientCliOptions['startStateMode'][];
   openStartRatios: readonly (number | undefined)[];
   advantageBaselines: readonly PolicyGradientCliOptions['advantageBaseline'][];
@@ -771,37 +809,43 @@ function expandVariants(grid: {
       for (const epochs of grid.epochs) {
         for (const ppoClip of grid.ppoClips) {
           for (const temperature of grid.temperatures) {
-            for (const startStateMode of grid.startStateModes) {
-              const openStartRatios = startStateMode === 'mixed' ? grid.openStartRatios : [undefined];
-              for (const openStartRatio of openStartRatios) {
-                for (const advantageBaseline of grid.advantageBaselines) {
-                  for (const runtimeWrapperMode of grid.runtimeWrapperModes) {
-                    const rewriteWeights = runtimeWrapperMode === 'tactical-downweight'
-                      ? grid.runtimeTacticalRewriteWeights
-                      : [0.5];
-                    for (const runtimeTacticalRewriteWeight of rewriteWeights) {
-                      for (const actionRetentionWeight of grid.actionRetentionWeights) {
-                        for (const earlyForwardSafetyWeight of grid.earlyForwardSafetyWeights) {
-                          for (const earlyForwardAnchorWeight of grid.earlyForwardAnchorWeights) {
-                            for (const policyAnchorWeight of grid.policyAnchorWeights) {
-                              for (const opponentMode of grid.opponentModes) {
-                                variants.push({
-                                  trainingSeed,
-                                  learningRate,
-                                  epochs,
-                                  ppoClip,
-                                  temperature,
-                                  startStateMode,
-                                  openStartRatio,
-                                  advantageBaseline,
-                                  runtimeWrapperMode,
-                                  runtimeTacticalRewriteWeight,
-                                  actionRetentionWeight,
-                                  earlyForwardSafetyWeight,
-                                  earlyForwardAnchorWeight,
-                                  policyAnchorWeight,
-                                  opponentMode
-                                });
+            for (const goalReward of grid.goalRewards) {
+              for (const winReward of grid.winRewards) {
+                for (const startStateMode of grid.startStateModes) {
+                  const openStartRatios = startStateMode === 'mixed' ? grid.openStartRatios : [undefined];
+                  for (const openStartRatio of openStartRatios) {
+                    for (const advantageBaseline of grid.advantageBaselines) {
+                      for (const runtimeWrapperMode of grid.runtimeWrapperModes) {
+                        const rewriteWeights = runtimeWrapperMode === 'tactical-downweight'
+                          ? grid.runtimeTacticalRewriteWeights
+                          : [0.5];
+                        for (const runtimeTacticalRewriteWeight of rewriteWeights) {
+                          for (const actionRetentionWeight of grid.actionRetentionWeights) {
+                            for (const earlyForwardSafetyWeight of grid.earlyForwardSafetyWeights) {
+                              for (const earlyForwardAnchorWeight of grid.earlyForwardAnchorWeights) {
+                                for (const policyAnchorWeight of grid.policyAnchorWeights) {
+                                  for (const opponentMode of grid.opponentModes) {
+                                    variants.push({
+                                      trainingSeed,
+                                      learningRate,
+                                      epochs,
+                                      ppoClip,
+                                      temperature,
+                                      goalReward,
+                                      winReward,
+                                      startStateMode,
+                                      openStartRatio,
+                                      advantageBaseline,
+                                      runtimeWrapperMode,
+                                      runtimeTacticalRewriteWeight,
+                                      actionRetentionWeight,
+                                      earlyForwardSafetyWeight,
+                                      earlyForwardAnchorWeight,
+                                      policyAnchorWeight,
+                                      opponentMode
+                                    });
+                                  }
+                                }
                               }
                             }
                           }
