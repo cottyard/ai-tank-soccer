@@ -44,6 +44,7 @@ export type PolicyGradientSearchVariant = {
   runtimeTacticalRewriteWeight: number;
   actionRetentionWeight: number;
   earlyForwardSafetyWeight: number;
+  earlyForwardAnchorWeight: number;
   opponentMode: PolicyGradientCliOptions['opponentMode'];
 };
 
@@ -106,6 +107,7 @@ export type PolicyGradientSearchOptions = {
   runtimeTacticalRewriteWeight: number;
   actionRetentionWeight: number;
   earlyForwardSafetyWeight: number;
+  earlyForwardAnchorWeight: number;
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
@@ -127,6 +129,7 @@ export type PolicyGradientSearchOptions = {
     runtimeTacticalRewriteWeights: number[];
     actionRetentionWeights: number[];
     earlyForwardSafetyWeights: number[];
+    earlyForwardAnchorWeights: number[];
     opponentModes: PolicyGradientCliOptions['opponentMode'][];
   };
   variants: PolicyGradientSearchVariant[];
@@ -174,6 +177,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const runtimeTacticalRewriteWeight = clamp01(numberArg(argv, '--runtime-tactical-rewrite-weight', 0.5));
   const actionRetentionWeight = Math.max(0, numberArg(argv, '--action-retention-weight', 0));
   const earlyForwardSafetyWeight = clamp01(numberArg(argv, '--early-forward-safety-weight', 1));
+  const earlyForwardAnchorWeight = Math.max(0, numberArg(argv, '--early-forward-anchor-weight', 0));
   const grid = {
     trainingSeeds: seedListArg(argv, '--training-seeds', [seed]),
     learningRates: numberListArg(argv, '--learning-rates', [0.001, 0.0008, 0.0006]),
@@ -194,6 +198,9 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       .filter((value, index, values) => values.indexOf(value) === index),
     earlyForwardSafetyWeights: numberListArg(argv, '--early-forward-safety-weights', [earlyForwardSafetyWeight])
       .map(clamp01)
+      .filter((value, index, values) => values.indexOf(value) === index),
+    earlyForwardAnchorWeights: numberListArg(argv, '--early-forward-anchor-weights', [earlyForwardAnchorWeight])
+      .map((value) => Math.max(0, value))
       .filter((value, index, values) => values.indexOf(value) === index),
     opponentModes: opponentModeListArg(argv, '--opponent-modes', [opponentMode])
   };
@@ -224,6 +231,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     runtimeTacticalRewriteWeight,
     actionRetentionWeight,
     earlyForwardSafetyWeight,
+    earlyForwardAnchorWeight,
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
@@ -245,6 +253,7 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       runtimeTacticalRewriteWeight,
       actionRetentionWeight,
       earlyForwardSafetyWeight,
+      earlyForwardAnchorWeight,
       opponentMode
     }),
     grid,
@@ -286,6 +295,9 @@ export function runPolicyGradientSearch(
         : undefined,
       options.grid.earlyForwardSafetyWeights.length > 1 || variant.earlyForwardSafetyWeight < 1
         ? `earlyfwd${slugNumber(variant.earlyForwardSafetyWeight)}`
+        : undefined,
+      options.grid.earlyForwardAnchorWeights.length > 1 || variant.earlyForwardAnchorWeight > 0
+        ? `anchor${slugNumber(variant.earlyForwardAnchorWeight)}`
         : undefined
     ].filter((part): part is string => part !== undefined).join('-');
     const candidatePath = join(options.outputDir, `${variantId}.json`);
@@ -308,6 +320,7 @@ export function runPolicyGradientSearch(
       runtimeTacticalRewriteWeight: variant.runtimeTacticalRewriteWeight,
       actionRetentionWeight: variant.actionRetentionWeight,
       earlyForwardSafetyWeight: variant.earlyForwardSafetyWeight,
+      earlyForwardAnchorWeight: variant.earlyForwardAnchorWeight,
       opponentMode: variant.opponentMode
     };
 
@@ -375,6 +388,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     console.log(`bestOpponentMode=${result.best.variant.opponentMode}`);
     console.log(`bestActionRetentionWeight=${result.best.variant.actionRetentionWeight}`);
     console.log(`bestEarlyForwardSafetyWeight=${result.best.variant.earlyForwardSafetyWeight}`);
+    console.log(`bestEarlyForwardAnchorWeight=${result.best.variant.earlyForwardAnchorWeight}`);
     console.log(`bestCandidate=${result.bestCandidatePath}`);
     console.log(`summaryOut=${result.summaryPath}`);
   } catch (error) {
@@ -400,6 +414,7 @@ function parseTrainingOptions(
     runtimeTacticalRewriteWeight: number;
     actionRetentionWeight: number;
     earlyForwardSafetyWeight: number;
+    earlyForwardAnchorWeight: number;
     opponentMode: string;
   }
 ): PolicyGradientCliOptions {
@@ -440,6 +455,8 @@ function parseTrainingOptions(
     String(base.actionRetentionWeight),
     '--early-forward-safety-weight',
     String(base.earlyForwardSafetyWeight),
+    '--early-forward-anchor-weight',
+    String(base.earlyForwardAnchorWeight),
     '--opponent-mode',
     base.opponentMode,
     '--league-current-weight',
@@ -700,7 +717,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     runtimeWrapperWeightMode: result.best.training.runtimeWrapperWeightMode,
     bestRuntimeTacticalRewriteWeight: result.best.variant.runtimeTacticalRewriteWeight,
     bestActionRetentionWeight: result.best.variant.actionRetentionWeight,
-    bestEarlyForwardSafetyWeight: result.best.variant.earlyForwardSafetyWeight
+    bestEarlyForwardSafetyWeight: result.best.variant.earlyForwardSafetyWeight,
+    bestEarlyForwardAnchorWeight: result.best.variant.earlyForwardAnchorWeight
   })}\n`, 'utf8');
 }
 
@@ -717,6 +735,7 @@ function expandVariants(grid: {
   runtimeTacticalRewriteWeights: readonly number[];
   actionRetentionWeights: readonly number[];
   earlyForwardSafetyWeights: readonly number[];
+  earlyForwardAnchorWeights: readonly number[];
   opponentModes: readonly PolicyGradientCliOptions['opponentMode'][];
 }): PolicyGradientSearchVariant[] {
   const variants: PolicyGradientSearchVariant[] = [];
@@ -736,22 +755,25 @@ function expandVariants(grid: {
                     for (const runtimeTacticalRewriteWeight of rewriteWeights) {
                       for (const actionRetentionWeight of grid.actionRetentionWeights) {
                         for (const earlyForwardSafetyWeight of grid.earlyForwardSafetyWeights) {
-                          for (const opponentMode of grid.opponentModes) {
-                            variants.push({
-                              trainingSeed,
-                              learningRate,
-                              epochs,
-                              ppoClip,
-                              temperature,
-                              startStateMode,
-                              openStartRatio,
-                              advantageBaseline,
-                              runtimeWrapperMode,
-                              runtimeTacticalRewriteWeight,
-                              actionRetentionWeight,
-                              earlyForwardSafetyWeight,
-                              opponentMode
-                            });
+                          for (const earlyForwardAnchorWeight of grid.earlyForwardAnchorWeights) {
+                            for (const opponentMode of grid.opponentModes) {
+                              variants.push({
+                                trainingSeed,
+                                learningRate,
+                                epochs,
+                                ppoClip,
+                                temperature,
+                                startStateMode,
+                                openStartRatio,
+                                advantageBaseline,
+                                runtimeWrapperMode,
+                                runtimeTacticalRewriteWeight,
+                                actionRetentionWeight,
+                                earlyForwardSafetyWeight,
+                                earlyForwardAnchorWeight,
+                                opponentMode
+                              });
+                            }
                           }
                         }
                       }

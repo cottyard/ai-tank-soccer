@@ -49,6 +49,8 @@ describe('policy-gradient CLI trainer', () => {
       '0.35',
       '--early-forward-safety-weight',
       '0.15',
+      '--early-forward-anchor-weight',
+      '0.4',
       '--opponent-mode',
       'traditional',
       '--native',
@@ -78,6 +80,7 @@ describe('policy-gradient CLI trainer', () => {
       runtimeTacticalRewriteWeight: 0.2,
       actionRetentionWeight: 0.35,
       earlyForwardSafetyWeight: 0.15,
+      earlyForwardAnchorWeight: 0.4,
       opponentMode: 'traditional',
       native: true,
       nativeBin: 'trainer-rust/target/release/soccer-policy-trainer.exe'

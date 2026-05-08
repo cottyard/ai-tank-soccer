@@ -692,6 +692,96 @@ describe('native policy trainer', () => {
     expect(totalDelta(weightedOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
   });
 
+  (cargoPath ? it : it.skip)('can anchor early low-pressure forward actions during Rust PPO updates', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-forward-anchor-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const defaultOutputWeights = join(workdir, 'default-trained.json');
+    const defaultMetricsOutput = join(workdir, 'default-metrics.json');
+    const anchoredOutputWeights = join(workdir, 'anchored-trained.json');
+    const anchoredMetricsOutput = join(workdir, 'anchored-metrics.json');
+    const targetDir = join(workdir, 'target');
+    const weights = defaultNeuralWeights();
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    const nativeBin = join(targetDir, 'release', 'soccer-policy-trainer.exe');
+    const baseArgs = [
+      '--native',
+      '--native-bin',
+      nativeBin,
+      '--input',
+      inputWeights,
+      '--seed',
+      '98',
+      '--matches',
+      '8',
+      '--frames',
+      '60',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '8',
+      '--start-state-mode',
+      'open',
+      '--action-mode',
+      'runtime'
+    ];
+
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      defaultOutputWeights,
+      '--metrics-output',
+      defaultMetricsOutput
+    ]));
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      anchoredOutputWeights,
+      '--metrics-output',
+      anchoredMetricsOutput,
+      '--early-forward-anchor-weight',
+      '0.4'
+    ]));
+
+    const defaultMetrics = JSON.parse(readFileSync(defaultMetricsOutput, 'utf8')) as {
+      earlyForwardAnchorWeight?: number;
+      earlyForwardSafety?: { candidates: number; anchored: number; anchorWeight: number };
+    };
+    const anchoredMetrics = JSON.parse(readFileSync(anchoredMetricsOutput, 'utf8')) as {
+      earlyForwardAnchorWeight?: number;
+      earlyForwardSafety?: { candidates: number; anchored: number; anchorWeight: number };
+    };
+    const anchoredOutput = JSON.parse(readFileSync(anchoredOutputWeights, 'utf8')) as {
+      metadata?: { earlyForwardAnchorWeight?: number };
+      weights: number[];
+    };
+    const defaultOutput = JSON.parse(readFileSync(defaultOutputWeights, 'utf8')) as { weights: number[] };
+
+    expect(defaultMetrics.earlyForwardAnchorWeight).toBe(0);
+    expect(defaultMetrics.earlyForwardSafety?.anchorWeight).toBe(0);
+    expect(anchoredMetrics.earlyForwardAnchorWeight).toBe(0.4);
+    expect(anchoredMetrics.earlyForwardSafety?.anchorWeight).toBe(0.4);
+    expect(anchoredMetrics.earlyForwardSafety?.candidates).toBeGreaterThan(0);
+    expect(anchoredMetrics.earlyForwardSafety?.anchored).toBe(anchoredMetrics.earlyForwardSafety?.candidates);
+    expect(anchoredOutput.metadata?.earlyForwardAnchorWeight).toBe(0.4);
+    expect(totalDelta(anchoredOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
+  });
+
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {
     const root = process.cwd();
     const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-league-'));

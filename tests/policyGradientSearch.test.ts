@@ -65,6 +65,8 @@ describe('policy-gradient promotion search', () => {
       '0,0.25',
       '--early-forward-safety-weights',
       '1,0.2',
+      '--early-forward-anchor-weights',
+      '0,0.4',
       '--opponent-modes',
       'self,league'
     ]);
@@ -101,10 +103,85 @@ describe('policy-gradient promotion search', () => {
         runtimeTacticalRewriteWeights: [0.5, 0.2],
         actionRetentionWeights: [0, 0.25],
         earlyForwardSafetyWeights: [1, 0.2],
+        earlyForwardAnchorWeights: [0, 0.4],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(3072);
+    expect(options.variants).toHaveLength(6144);
+  });
+
+  it('searches early forward anchor weights as an accepted-policy anchor dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-forward-anchor-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const trainedVariants: Array<{
+      earlyForwardAnchorWeight: number;
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '72',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--early-forward-anchor-weights',
+        '0,0.4'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          earlyForwardAnchorWeight: training.earlyForwardAnchorWeight,
+          output: training.output
+        });
+        const score = 10 + training.earlyForwardAnchorWeight;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(2);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ earlyForwardAnchorWeight: 0 }),
+      expect.objectContaining({ earlyForwardAnchorWeight: 0.4 })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-anchor0.json'),
+      expect.stringContaining('-anchor0p4.json')
+    ]);
+    expect(result.best.variant.earlyForwardAnchorWeight).toBe(0.4);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestEarlyForwardAnchorWeight: 0.4
+    });
   });
 
   it('searches early forward safety weights as a training-safety dimension', () => {

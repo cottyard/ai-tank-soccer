@@ -336,6 +336,7 @@ describe('policy-gradient promotion loop', () => {
         runtimeWrapperWeightMode: 'tactical-downweight',
         actionRetentionWeight: 0.3,
         earlyForwardSafetyWeight: 0.2,
+        earlyForwardAnchorWeight: 0.4,
         opponentMode: 'self',
         trainer: 'rust-policy-gradient'
       }
@@ -379,6 +380,7 @@ describe('policy-gradient promotion loop', () => {
       runtimeWrapperWeightMode: 'tactical-downweight',
       actionRetentionWeight: 0.3,
       earlyForwardSafetyWeight: 0.2,
+      earlyForwardAnchorWeight: 0.4,
       opponentMode: 'self'
     });
     expect(JSON.parse(readFileSync(bestPath, 'utf8'))).toMatchObject({ weights: candidate });
@@ -394,6 +396,7 @@ describe('policy-gradient promotion loop', () => {
       runtimeWrapperWeightMode: 'tactical-downweight',
       actionRetentionWeight: 0.3,
       earlyForwardSafetyWeight: 0.2,
+      earlyForwardAnchorWeight: 0.4,
       epochs: 1,
       batchSize: 96,
       learningRate: 0.0008

@@ -68,6 +68,7 @@ struct Sample {
     advantage: f64,
     old_probability: Option<f64>,
     old_probabilities: Option<[f64; OUTPUT_COUNT]>,
+    early_forward_anchor_weight: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -157,6 +158,7 @@ struct Options {
     runtime_tactical_rewrite_weight: f64,
     action_retention_weight: f64,
     early_forward_safety_weight: f64,
+    early_forward_anchor_weight: f64,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -269,6 +271,7 @@ struct TrainingResult {
     runtime_tactical_rewrite_weight: f64,
     action_retention_weight: f64,
     early_forward_safety_weight: f64,
+    early_forward_anchor_weight: f64,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -313,6 +316,8 @@ struct EarlyForwardSafetySummary {
     candidates: usize,
     weighted: usize,
     weight: f64,
+    anchored: usize,
+    anchor_weight: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -420,6 +425,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         runtime_tactical_rewrite_weight: 0.5,
         action_retention_weight: 0.0,
         early_forward_safety_weight: 1.0,
+        early_forward_anchor_weight: 0.0,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -510,6 +516,9 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
             "--early-forward-safety-weight" => {
                 options.early_forward_safety_weight = clamp01(value.parse::<f64>()?)
             }
+            "--early-forward-anchor-weight" => {
+                options.early_forward_anchor_weight = value.parse::<f64>()?.max(0.0)
+            }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
                     "self" | "self-play" => OpponentMode::SelfPlay,
@@ -596,6 +605,7 @@ fn load_samples(path: &str) -> Result<Vec<Sample>, Box<dyn Error>> {
             advantage,
             old_probability,
             old_probabilities: None,
+            early_forward_anchor_weight: 0.0,
         });
         cursor = object_end + 1;
     }
@@ -663,6 +673,7 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         runtime_tactical_rewrite_weight: options.runtime_tactical_rewrite_weight,
         action_retention_weight: options.action_retention_weight,
         early_forward_safety_weight: options.early_forward_safety_weight,
+        early_forward_anchor_weight: options.early_forward_anchor_weight,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -841,7 +852,11 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
     let policy_action_survival = summarize_policy_action_survival(&all_decisions);
     let advantages = normalized_advantages(&all_decisions, options.advantage_baseline);
     let runtime_decision_outcomes = summarize_runtime_decision_outcomes(&all_decisions, &advantages);
-    let early_forward_safety = summarize_early_forward_safety(&all_decisions, options.early_forward_safety_weight);
+    let early_forward_safety = summarize_early_forward_safety(
+        &all_decisions,
+        options.early_forward_safety_weight,
+        options.early_forward_anchor_weight,
+    );
     let samples = all_decisions
         .into_iter()
         .zip(advantages)
@@ -868,6 +883,11 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                 advantage,
                 old_probability: Some(decision.probability),
                 old_probabilities: Some(decision.probabilities),
+                early_forward_anchor_weight: if decision.early_forward_safety {
+                    options.early_forward_anchor_weight
+                } else {
+                    0.0
+                },
             })
         })
         .collect();
@@ -914,6 +934,7 @@ fn early_forward_safety_sample_weight(decision: &PendingDecision, early_forward_
 fn summarize_early_forward_safety(
     decisions: &[(PendingDecision, f64)],
     early_forward_safety_weight: f64,
+    early_forward_anchor_weight: f64,
 ) -> EarlyForwardSafetySummary {
     let candidates = decisions
         .iter()
@@ -927,6 +948,12 @@ fn summarize_early_forward_safety(
             0
         },
         weight: early_forward_safety_weight,
+        anchored: if early_forward_anchor_weight > 0.0 {
+            candidates
+        } else {
+            0
+        },
+        anchor_weight: early_forward_anchor_weight,
     }
 }
 
@@ -1159,7 +1186,15 @@ fn train_batch(
         } else {
             sample.weight
         };
-        if sample_weight <= 0.0 || (policy_gradient && sample.advantage == 0.0) {
+        let anchor_weight = if policy_gradient {
+            sample.early_forward_anchor_weight
+        } else {
+            0.0
+        };
+        if sample_weight <= 0.0 && anchor_weight <= 0.0 {
+            continue;
+        }
+        if policy_gradient && sample.advantage == 0.0 && anchor_weight <= 0.0 {
             continue;
         }
 
@@ -1176,12 +1211,12 @@ fn train_batch(
                 && sample.old_probability.is_some()
                 && clips_ppo_update(ratio, sample.advantage, options.ppo_clip)
             {
-                total_weight += sample_weight;
-                continue;
+                0.0
+            } else {
+                let weighted_advantage = sample.advantage.signum() * sample_weight;
+                total_loss += -weighted_advantage * probs[sample.action].max(1e-12).ln();
+                weighted_advantage
             }
-            let weighted_advantage = sample.advantage.signum() * sample_weight;
-            total_loss += -weighted_advantage * probs[sample.action].max(1e-12).ln();
-            weighted_advantage
         } else {
             total_loss += -probs[sample.action].max(1e-12).ln() * sample_weight;
             sample_weight
@@ -1199,7 +1234,10 @@ fn train_batch(
         if let Some(old_probs) = old_probabilities {
             total_loss += retention_weight * kl_divergence(old_probs, &probs);
         }
-        total_weight += sample_weight;
+        if anchor_weight > 0.0 {
+            total_loss += -anchor_weight * probs[8].max(1e-12).ln();
+        }
+        total_weight += sample_weight + anchor_weight;
         d2.fill(0.0);
         d1.fill(0.0);
 
@@ -1207,8 +1245,14 @@ fn train_batch(
             let retention_delta = old_probabilities
                 .map(|old_probs| retention_weight * (probs[out] - old_probs[out]))
                 .unwrap_or(0.0);
+            let anchor_delta = if anchor_weight > 0.0 {
+                (probs[out] - if out == 8 { 1.0 } else { 0.0 }) * anchor_weight
+            } else {
+                0.0
+            };
             let delta = (probs[out] - if out == sample.action { 1.0 } else { 0.0 }) * scale
-                + retention_delta;
+                + retention_delta
+                + anchor_delta;
             let row = layer2_offset() + out * (HIDDEN2 + 1);
             for input in 0..HIDDEN2 {
                 gradient[row + input] += delta * h2[input];
@@ -3639,6 +3683,10 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             options.early_forward_safety_weight
         ));
         output.push_str(&format!(
+            ",\n    \"earlyForwardAnchorWeight\": {}",
+            options.early_forward_anchor_weight
+        ));
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3683,6 +3731,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"runtimeTacticalRewriteWeight\": {},\n",
             "  \"actionRetentionWeight\": {},\n",
             "  \"earlyForwardSafetyWeight\": {},\n",
+            "  \"earlyForwardAnchorWeight\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
@@ -3699,7 +3748,9 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"earlyForwardSafety\": {{\n",
             "    \"candidates\": {},\n",
             "    \"weighted\": {},\n",
-            "    \"weight\": {}\n",
+            "    \"weight\": {},\n",
+            "    \"anchored\": {},\n",
+            "    \"anchorWeight\": {}\n",
             "  }},\n",
             "  \"runtimeDecisionOutcomes\": {{\n",
             "    \"survived\": {},\n",
@@ -3741,6 +3792,7 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.runtime_tactical_rewrite_weight,
         result.action_retention_weight,
         result.early_forward_safety_weight,
+        result.early_forward_anchor_weight,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",
@@ -3759,6 +3811,8 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.early_forward_safety.candidates,
         result.early_forward_safety.weighted,
         result.early_forward_safety.weight,
+        result.early_forward_safety.anchored,
+        result.early_forward_safety.anchor_weight,
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.survived),
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.changed),
         serialize_runtime_decision_outcome_stats(result.runtime_decision_outcomes.tactical_changed),
