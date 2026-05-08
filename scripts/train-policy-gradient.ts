@@ -42,6 +42,8 @@ export type PolicyGradientCliOptions = {
   actionRetentionWeight: number;
   earlyForwardSafetyWeight: number;
   earlyForwardAnchorWeight: number;
+  policyAnchorData: string[];
+  policyAnchorWeight: number;
   opponentMode: 'self' | 'traditional' | 'league';
   leagueOpponentWeights: string[];
   leagueCurrentWeight: number;
@@ -70,6 +72,8 @@ const DEFAULT_OPTIONS: PolicyGradientCliOptions = {
   actionRetentionWeight: 0,
   earlyForwardSafetyWeight: 1,
   earlyForwardAnchorWeight: 0,
+  policyAnchorData: [],
+  policyAnchorWeight: 0,
   opponentMode: 'self',
   leagueOpponentWeights: [],
   leagueCurrentWeight: 1,
@@ -101,6 +105,8 @@ export function parsePolicyGradientArgs(argv: readonly string[]): PolicyGradient
     actionRetentionWeight: Math.max(0, numberArg(argv, '--action-retention-weight', DEFAULT_OPTIONS.actionRetentionWeight)),
     earlyForwardSafetyWeight: clamp01(numberArg(argv, '--early-forward-safety-weight', DEFAULT_OPTIONS.earlyForwardSafetyWeight)),
     earlyForwardAnchorWeight: Math.max(0, numberArg(argv, '--early-forward-anchor-weight', DEFAULT_OPTIONS.earlyForwardAnchorWeight)),
+    policyAnchorData: stringArgs(argv, '--policy-anchor-data'),
+    policyAnchorWeight: Math.max(0, numberArg(argv, '--policy-anchor-weight', DEFAULT_OPTIONS.policyAnchorWeight)),
     opponentMode: opponentModeArg(argv, '--opponent-mode', DEFAULT_OPTIONS.opponentMode),
     leagueOpponentWeights: stringArgs(argv, '--league-opponent-weights'),
     leagueCurrentWeight: Math.max(0, numberArg(argv, '--league-current-weight', DEFAULT_OPTIONS.leagueCurrentWeight)),
@@ -216,6 +222,8 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
     String(options.earlyForwardSafetyWeight),
     '--early-forward-anchor-weight',
     String(options.earlyForwardAnchorWeight),
+    '--policy-anchor-weight',
+    String(options.policyAnchorWeight),
     '--opponent-mode',
     options.opponentMode,
     '--league-current-weight',
@@ -240,6 +248,9 @@ function runNativePolicyGradientCli(options: PolicyGradientCliOptions): PolicyGr
 
   for (const path of options.leagueOpponentWeights) {
     args.push('--league-opponent-weights', path);
+  }
+  for (const path of options.policyAnchorData) {
+    args.push('--policy-anchor-data', path);
   }
 
   execFileSync(nativeBin, args, { stdio: 'pipe' });

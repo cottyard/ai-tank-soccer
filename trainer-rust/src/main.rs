@@ -69,6 +69,7 @@ struct Sample {
     old_probability: Option<f64>,
     old_probabilities: Option<[f64; OUTPUT_COUNT]>,
     early_forward_anchor_weight: f64,
+    policy_anchor_weight: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -159,6 +160,8 @@ struct Options {
     action_retention_weight: f64,
     early_forward_safety_weight: f64,
     early_forward_anchor_weight: f64,
+    policy_anchor_data_paths: Vec<String>,
+    policy_anchor_weight: f64,
     opponent_mode: OpponentMode,
     league_current_weight: f64,
     league_traditional_weight: f64,
@@ -247,6 +250,7 @@ struct Collection {
     red_goals: i32,
     blue_goals: i32,
     final_state: GameState,
+    policy_anchor_samples: usize,
 }
 
 struct TrainingResult {
@@ -272,6 +276,8 @@ struct TrainingResult {
     action_retention_weight: f64,
     early_forward_safety_weight: f64,
     early_forward_anchor_weight: f64,
+    policy_anchor_samples: usize,
+    policy_anchor_weight: f64,
     opponent_mode: OpponentMode,
     league_opponent_count: usize,
     league_current_weight: f64,
@@ -367,7 +373,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
             fs::write(
                 &options.output_path,
-                serialize_weights(&weights, &options, samples.len(), "rust-bc"),
+                serialize_weights(&weights, &options, samples.len(), 0, "rust-bc"),
             )?;
         }
         Mode::PolicyGradient => {
@@ -383,7 +389,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
             fs::write(
                 &options.output_path,
-                serialize_weights(&result.weights, &options, result.samples, "rust-policy-gradient"),
+                serialize_weights(
+                    &result.weights,
+                    &options,
+                    result.samples,
+                    result.policy_anchor_samples,
+                    "rust-policy-gradient",
+                ),
             )?;
             if let Some(path) = &options.metrics_output_path {
                 fs::write(path, serialize_metrics(&result))?;
@@ -426,6 +438,8 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
         action_retention_weight: 0.0,
         early_forward_safety_weight: 1.0,
         early_forward_anchor_weight: 0.0,
+        policy_anchor_data_paths: Vec::new(),
+        policy_anchor_weight: 0.0,
         opponent_mode: OpponentMode::SelfPlay,
         league_current_weight: 1.0,
         league_traditional_weight: 0.0,
@@ -519,6 +533,10 @@ fn parse_args(args: Vec<String>) -> Result<Options, Box<dyn Error>> {
             "--early-forward-anchor-weight" => {
                 options.early_forward_anchor_weight = value.parse::<f64>()?.max(0.0)
             }
+            "--policy-anchor-data" => options.policy_anchor_data_paths.push(value),
+            "--policy-anchor-weight" => {
+                options.policy_anchor_weight = value.parse::<f64>()?.max(0.0)
+            }
             "--opponent-mode" => {
                 options.opponent_mode = match value.as_str() {
                     "self" | "self-play" => OpponentMode::SelfPlay,
@@ -606,6 +624,7 @@ fn load_samples(path: &str) -> Result<Vec<Sample>, Box<dyn Error>> {
             old_probability,
             old_probabilities: None,
             early_forward_anchor_weight: 0.0,
+            policy_anchor_weight: 0.0,
         });
         cursor = object_end + 1;
     }
@@ -674,6 +693,8 @@ fn train_policy_gradient_self_play(initial_weights: &[f64], options: &Options) -
         action_retention_weight: options.action_retention_weight,
         early_forward_safety_weight: options.early_forward_safety_weight,
         early_forward_anchor_weight: options.early_forward_anchor_weight,
+        policy_anchor_samples: collection.policy_anchor_samples,
+        policy_anchor_weight: options.policy_anchor_weight,
         opponent_mode: options.opponent_mode,
         league_opponent_count: options.league_opponent_weight_paths.len(),
         league_current_weight: options.league_current_weight,
@@ -857,7 +878,7 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
         options.early_forward_safety_weight,
         options.early_forward_anchor_weight,
     );
-    let samples = all_decisions
+    let mut samples: Vec<Sample> = all_decisions
         .into_iter()
         .zip(advantages)
         .filter_map(|((decision, _), advantage)| {
@@ -888,9 +909,12 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
                 } else {
                     0.0
                 },
+                policy_anchor_weight: 0.0,
             })
         })
         .collect();
+    let policy_anchor_samples = append_policy_anchor_samples(&mut samples, options)
+        .expect("Expected valid policy anchor samples");
 
     Collection {
         samples,
@@ -903,7 +927,30 @@ fn collect_policy_gradient_self_play(weights: &[f64], options: &Options) -> Coll
         red_goals,
         blue_goals,
         final_state,
+        policy_anchor_samples,
     }
+}
+
+fn append_policy_anchor_samples(samples: &mut Vec<Sample>, options: &Options) -> Result<usize, Box<dyn Error>> {
+    if options.policy_anchor_weight <= 0.0 || options.policy_anchor_data_paths.is_empty() {
+        return Ok(0);
+    }
+
+    let mut anchor_count = 0;
+    for path in &options.policy_anchor_data_paths {
+        for mut sample in load_samples(path)? {
+            anchor_count += 1;
+            let anchor_weight = sample.weight * options.policy_anchor_weight;
+            sample.weight = 0.0;
+            sample.advantage = 0.0;
+            sample.old_probability = None;
+            sample.old_probabilities = None;
+            sample.early_forward_anchor_weight = 0.0;
+            sample.policy_anchor_weight = anchor_weight;
+            samples.push(sample);
+        }
+    }
+    Ok(anchor_count)
 }
 
 fn runtime_wrapper_sample_weight(
@@ -1191,10 +1238,15 @@ fn train_batch(
         } else {
             0.0
         };
-        if sample_weight <= 0.0 && anchor_weight <= 0.0 {
+        let explicit_anchor_weight = if policy_gradient {
+            sample.policy_anchor_weight
+        } else {
+            0.0
+        };
+        if sample_weight <= 0.0 && anchor_weight <= 0.0 && explicit_anchor_weight <= 0.0 {
             continue;
         }
-        if policy_gradient && sample.advantage == 0.0 && anchor_weight <= 0.0 {
+        if policy_gradient && sample.advantage == 0.0 && anchor_weight <= 0.0 && explicit_anchor_weight <= 0.0 {
             continue;
         }
 
@@ -1237,7 +1289,10 @@ fn train_batch(
         if anchor_weight > 0.0 {
             total_loss += -anchor_weight * probs[8].max(1e-12).ln();
         }
-        total_weight += sample_weight + anchor_weight;
+        if explicit_anchor_weight > 0.0 {
+            total_loss += -explicit_anchor_weight * probs[sample.action].max(1e-12).ln();
+        }
+        total_weight += sample_weight + anchor_weight + explicit_anchor_weight;
         d2.fill(0.0);
         d1.fill(0.0);
 
@@ -1250,9 +1305,15 @@ fn train_batch(
             } else {
                 0.0
             };
+            let explicit_anchor_delta = if explicit_anchor_weight > 0.0 {
+                (probs[out] - if out == sample.action { 1.0 } else { 0.0 }) * explicit_anchor_weight
+            } else {
+                0.0
+            };
             let delta = (probs[out] - if out == sample.action { 1.0 } else { 0.0 }) * scale
                 + retention_delta
-                + anchor_delta;
+                + anchor_delta
+                + explicit_anchor_delta;
             let row = layer2_offset() + out * (HIDDEN2 + 1);
             for input in 0..HIDDEN2 {
                 gradient[row + input] += delta * h2[input];
@@ -3611,7 +3672,13 @@ fn matching_bracket(text: &str, open: usize) -> Result<usize, Box<dyn Error>> {
     Err("Unclosed JSON array".into())
 }
 
-fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, trainer: &str) -> String {
+fn serialize_weights(
+    weights: &[f64],
+    options: &Options,
+    sample_count: usize,
+    policy_anchor_samples: usize,
+    trainer: &str,
+) -> String {
     let mut output = String::from("{\n  \"weights\": [\n");
     for (index, weight) in weights.iter().enumerate() {
         output.push_str(&format!("    {weight:.17}"));
@@ -3687,6 +3754,24 @@ fn serialize_weights(weights: &[f64], options: &Options, sample_count: usize, tr
             options.early_forward_anchor_weight
         ));
         output.push_str(&format!(
+            ",\n    \"policyAnchorSamples\": {}",
+            policy_anchor_samples
+        ));
+        output.push_str(&format!(
+            ",\n    \"policyAnchorWeight\": {}",
+            options.policy_anchor_weight
+        ));
+        if !options.policy_anchor_data_paths.is_empty() {
+            output.push_str(&format!(
+                ",\n    \"policyAnchorData\": [{}]",
+                options.policy_anchor_data_paths
+                    .iter()
+                    .map(|path| format!("\"{}\"", json_escape(path)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        output.push_str(&format!(
             ",\n    \"opponentMode\": \"{}\"",
             match options.opponent_mode {
                 OpponentMode::SelfPlay => "self",
@@ -3732,6 +3817,8 @@ fn serialize_metrics(result: &TrainingResult) -> String {
             "  \"actionRetentionWeight\": {},\n",
             "  \"earlyForwardSafetyWeight\": {},\n",
             "  \"earlyForwardAnchorWeight\": {},\n",
+            "  \"policyAnchorSamples\": {},\n",
+            "  \"policyAnchorWeight\": {},\n",
             "  \"opponentMode\": \"{}\",\n",
             "  \"leagueOpponentCount\": {},\n",
             "  \"leagueCurrentWeight\": {},\n",
@@ -3793,6 +3880,8 @@ fn serialize_metrics(result: &TrainingResult) -> String {
         result.action_retention_weight,
         result.early_forward_safety_weight,
         result.early_forward_anchor_weight,
+        result.policy_anchor_samples,
+        result.policy_anchor_weight,
         match result.opponent_mode {
             OpponentMode::SelfPlay => "self",
             OpponentMode::Traditional => "traditional",
@@ -3881,6 +3970,12 @@ fn optional_number_json(value: Option<f64>) -> String {
     value
         .map(|number| format!("{number:.17}"))
         .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 fn layer0_offset() -> usize {

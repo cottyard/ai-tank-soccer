@@ -265,6 +265,8 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
     stringArg(argv, '--early-forward-safety-weight') ?? '1',
     '--early-forward-anchor-weight',
     stringArg(argv, '--early-forward-anchor-weight') ?? '0',
+    '--policy-anchor-weight',
+    stringArg(argv, '--policy-anchor-weight') ?? '0',
     '--opponent-mode',
     stringArg(argv, '--opponent-mode') ?? 'league',
     '--league-current-weight',
@@ -280,6 +282,9 @@ function parseTrainingOptions(argv: readonly string[], seed: number): PolicyGrad
   }
   for (const path of stringArgs(argv, '--league-opponent-weights')) {
     trainingArgs.push('--league-opponent-weights', path);
+  }
+  for (const path of stringArgs(argv, '--policy-anchor-data')) {
+    trainingArgs.push('--policy-anchor-data', path);
   }
   if (nativeBin) {
     trainingArgs.push('--native-bin', nativeBin);
@@ -468,6 +473,7 @@ function appendHistory(path: string, result: PromotionLoopResult): void {
     actionRetentionWeight: result.training.actionRetentionWeight,
     earlyForwardSafetyWeight: result.training.earlyForwardSafetyWeight,
     earlyForwardAnchorWeight: result.training.earlyForwardAnchorWeight,
+    policyAnchorWeight: result.training.policyAnchorWeight,
     matches: result.training.matches,
     frames: result.training.frames,
     epochs: result.training.epochs,
@@ -525,6 +531,8 @@ function trainingFromCandidateMetadata(
       'earlyForwardAnchorWeight',
       fallback.earlyForwardAnchorWeight
     ),
+    policyAnchorData: stringArrayMetadata(metadata, 'policyAnchorData', fallback.policyAnchorData),
+    policyAnchorWeight: finiteMetadataNumber(metadata, 'policyAnchorWeight', fallback.policyAnchorWeight),
     opponentMode: opponentModeMetadata(metadata, fallback.opponentMode)
   };
 }
@@ -559,6 +567,17 @@ function booleanMetadata(
 ): boolean {
   const value = metadata[field];
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function stringArrayMetadata(
+  metadata: Record<string, unknown>,
+  field: string,
+  fallback: string[]
+): string[] {
+  const value = metadata[field];
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+    ? [...value]
+    : fallback;
 }
 
 function startStateModeMetadata(

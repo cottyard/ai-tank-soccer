@@ -782,6 +782,105 @@ describe('native policy trainer', () => {
     expect(totalDelta(anchoredOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
   });
 
+  (cargoPath ? it : it.skip)('can append explicit policy-anchor samples during Rust PPO updates', () => {
+    const root = process.cwd();
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-state-anchor-'));
+    const inputWeights = join(workdir, 'weights.json');
+    const anchorData = join(workdir, 'anchors.json');
+    const defaultOutputWeights = join(workdir, 'default-trained.json');
+    const defaultMetricsOutput = join(workdir, 'default-metrics.json');
+    const anchoredOutputWeights = join(workdir, 'anchored-trained.json');
+    const anchoredMetricsOutput = join(workdir, 'anchored-metrics.json');
+    const targetDir = join(workdir, 'target');
+    const sampleInputs = Array.from({ length: 36 }, (_, index) =>
+      index % 3 === 0 ? 0.4 : index % 3 === 1 ? -0.2 : 0.05
+    );
+    const weights = defaultNeuralWeights();
+    const env = {
+      ...process.env,
+      PATH: `${parentDirectory(cargoPath!)};${process.env.PATH ?? ''}`,
+      HTTP_PROXY: process.env.HTTP_PROXY ?? 'http://localhost:10808',
+      HTTPS_PROXY: process.env.HTTPS_PROXY ?? 'http://localhost:10808'
+    };
+
+    writeFileSync(inputWeights, JSON.stringify({ weights }), 'utf8');
+    writeFileSync(anchorData, JSON.stringify({
+      samples: [
+        { inputs: sampleInputs, actionIndex: 8, team: 'red', frame: 18, tags: ['policyAnchor'], weight: 2 },
+        { inputs: sampleInputs.map((value) => value * 0.5), actionIndex: 8, team: 'blue', frame: 30, tags: ['policyAnchor'], weight: 1 }
+      ]
+    }), 'utf8');
+    execFileSync(cargoPath!, [
+      'build',
+      '--release',
+      '--manifest-path',
+      join(root, 'trainer-rust', 'Cargo.toml'),
+      '--target-dir',
+      targetDir
+    ], { cwd: root, env, stdio: 'pipe' });
+    const nativeBin = join(targetDir, 'release', 'soccer-policy-trainer.exe');
+    const baseArgs = [
+      '--native',
+      '--native-bin',
+      nativeBin,
+      '--input',
+      inputWeights,
+      '--seed',
+      '99',
+      '--matches',
+      '4',
+      '--frames',
+      '48',
+      '--epochs',
+      '1',
+      '--batch-size',
+      '8',
+      '--action-mode',
+      'runtime'
+    ];
+
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      defaultOutputWeights,
+      '--metrics-output',
+      defaultMetricsOutput
+    ]));
+    runPolicyGradientCli(parsePolicyGradientArgs([
+      ...baseArgs,
+      '--output',
+      anchoredOutputWeights,
+      '--metrics-output',
+      anchoredMetricsOutput,
+      '--policy-anchor-data',
+      anchorData,
+      '--policy-anchor-weight',
+      '0.5'
+    ]));
+
+    const anchoredMetrics = JSON.parse(readFileSync(anchoredMetricsOutput, 'utf8')) as {
+      policyAnchorSamples?: number;
+      policyAnchorWeight?: number;
+      samples: number;
+    };
+    const anchoredOutput = JSON.parse(readFileSync(anchoredOutputWeights, 'utf8')) as {
+      metadata?: { policyAnchorSamples?: number; policyAnchorWeight?: number };
+      weights: number[];
+    };
+    const defaultOutput = JSON.parse(readFileSync(defaultOutputWeights, 'utf8')) as { weights: number[] };
+
+    expect(anchoredMetrics.policyAnchorSamples).toBe(2);
+    expect(anchoredMetrics.policyAnchorWeight).toBe(0.5);
+    const policyAnchorSamples = anchoredMetrics.policyAnchorSamples;
+    if (policyAnchorSamples === undefined) {
+      throw new Error('Expected policy anchor sample metrics');
+    }
+    expect(anchoredMetrics.samples).toBeGreaterThan(policyAnchorSamples);
+    expect(anchoredOutput.metadata?.policyAnchorSamples).toBe(2);
+    expect(anchoredOutput.metadata?.policyAnchorWeight).toBe(0.5);
+    expect(totalDelta(anchoredOutput.weights, defaultOutput.weights)).toBeGreaterThan(0);
+  });
+
   (cargoPath ? it : it.skip)('samples Rust PPO opponents from a weighted league', () => {
     const root = process.cwd();
     const workdir = mkdtempSync(join(tmpdir(), 'soccer-rust-ppo-league-'));

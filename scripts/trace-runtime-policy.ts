@@ -7,6 +7,7 @@ import {
   compareRuntimeTraces,
   traceRuntimePolicy,
   traceRuntimePolicyDecisions,
+  type RuntimeDecisionTraceRecord,
   type RuntimeDecisionTraceComparison,
   type RuntimeTraceDelta,
   type RuntimeTraceSummary
@@ -21,6 +22,7 @@ type TraceRuntimePolicyOptions = {
   currentPath: string;
   candidatePath?: string;
   outputPath?: string;
+  anchorOutputPath?: string;
   seeds: number[];
   matches: number;
   frames: number;
@@ -39,7 +41,25 @@ type TraceRuntimePolicyResult = {
     currentDecisionCount: number;
     candidateDecisionCount: number;
     comparison: RuntimeDecisionTraceComparison;
+    currentDecisions: RuntimeDecisionTraceRecord[];
   };
+  policyAnchors?: PolicyAnchorExport;
+};
+
+export type PolicyAnchorSample = {
+  inputs: number[];
+  actionIndex: number;
+  team: string;
+  seed: number;
+  match: number;
+  frame: number;
+  decisionIndex: number;
+  tags: string[];
+  weight: number;
+};
+
+export type PolicyAnchorExport = {
+  samples: PolicyAnchorSample[];
 };
 
 const DEFAULT_STANDARD_SEEDS = [19, 31, 43, 57, 71];
@@ -49,6 +69,7 @@ export function parseTraceRuntimePolicyArgs(argv: readonly string[]): TraceRunti
     currentPath: stringArg(argv, '--current') ?? 'public/models/neural-best.json',
     candidatePath: stringArg(argv, '--candidate'),
     outputPath: stringArg(argv, '--output'),
+    anchorOutputPath: stringArg(argv, '--anchor-output'),
     seeds: seedListArg(argv, '--seeds', DEFAULT_STANDARD_SEEDS),
     matches: positiveIntegerArg(argv, '--matches', 4),
     frames: positiveIntegerArg(argv, '--frames', 600),
@@ -70,6 +91,13 @@ export function runTraceRuntimePolicyDetailed(options: TraceRuntimePolicyOptions
   const decisionAnalysis = options.decisionAnalysis && options.candidatePath
     ? analyzeRuntimeDecisionVisibility(options)
     : undefined;
+  const policyAnchors = options.anchorOutputPath && decisionAnalysis
+    ? buildPolicyAnchorSamples(decisionAnalysis.comparison, decisionAnalysis.currentDecisions)
+    : undefined;
+  if (options.anchorOutputPath && policyAnchors) {
+    ensureParentDirectory(options.anchorOutputPath);
+    writeFileSync(options.anchorOutputPath, `${JSON.stringify(policyAnchors, null, 2)}\n`, 'utf8');
+  }
   if (options.outputPath) {
     ensureParentDirectory(options.outputPath);
     writeFileSync(options.outputPath, `${JSON.stringify({
@@ -77,12 +105,20 @@ export function runTraceRuntimePolicyDetailed(options: TraceRuntimePolicyOptions
       options,
       traces,
       delta: traces.length > 1 ? compareRuntimeTraces(traces[1].trace, traces[0].trace) : undefined,
-      decisionAnalysis
+      decisionAnalysis: decisionAnalysis
+        ? {
+            currentDecisionCount: decisionAnalysis.currentDecisionCount,
+            candidateDecisionCount: decisionAnalysis.candidateDecisionCount,
+            comparison: decisionAnalysis.comparison
+          }
+        : undefined,
+      policyAnchors
     }, null, 2)}\n`, 'utf8');
   }
   return {
     traces,
-    decisionAnalysis
+    decisionAnalysis,
+    policyAnchors
   };
 }
 
@@ -139,8 +175,68 @@ function analyzeRuntimeDecisionVisibility(options: TraceRuntimePolicyOptions): T
   return {
     currentDecisionCount: current.decisions.length,
     candidateDecisionCount: candidate.decisions.length,
-    comparison: compareRuntimeDecisionTraces(candidate.decisions, current.decisions)
+    comparison: compareRuntimeDecisionTraces(candidate.decisions, current.decisions),
+    currentDecisions: current.decisions
   };
+}
+
+export function buildPolicyAnchorSamples(
+  comparison: RuntimeDecisionTraceComparison,
+  currentDecisions: readonly RuntimeDecisionTraceRecord[]
+): PolicyAnchorExport {
+  const decisionsByKey = new Map(currentDecisions.map((record) => [decisionRecordKey(record), record]));
+  const seen = new Set<string>();
+  const samples: PolicyAnchorSample[] = [];
+
+  for (const divergence of comparison.firstFinalActionDivergences) {
+    if (!isLowPressureForwardLossDivergence(divergence)) {
+      continue;
+    }
+    const key = decisionRecordKey(divergence);
+    if (seen.has(key)) {
+      continue;
+    }
+    const current = decisionsByKey.get(key);
+    if (!current?.inputs || current.inputs.length !== 36 || current.inputs.some((value) => !Number.isFinite(value))) {
+      continue;
+    }
+    seen.add(key);
+    samples.push({
+      inputs: [...current.inputs],
+      actionIndex: 8,
+      team: current.controlledTeam,
+      seed: current.seed,
+      match: current.match,
+      frame: current.frame,
+      decisionIndex: current.decisionIndex,
+      tags: ['policyAnchor', 'lowPressureForwardLoss'],
+      weight: 1
+    });
+  }
+
+  return { samples };
+}
+
+function isLowPressureForwardLossDivergence(
+  divergence: RuntimeDecisionTraceComparison['firstFinalActionDivergences'][number]
+): boolean {
+  return divergence.currentFinalActionIndex === 8 &&
+    divergence.currentRawPolicyActionIndex === 8 &&
+    divergence.candidateFinalActionIndex !== 8 &&
+    divergence.staminaRatio > 0.5 &&
+    divergence.finishingPressure < 0.2 &&
+    divergence.ownGoalPressure < 0.2 &&
+    divergence.attackCornerPressure < 0.2 &&
+    divergence.ownCornerPressure < 0.2;
+}
+
+function decisionRecordKey(record: {
+  seed: number;
+  match: number;
+  controlledTeam: string;
+  decisionIndex: number;
+}): string {
+  return `${record.seed}|${record.match}|${record.controlledTeam}|${record.decisionIndex}`;
 }
 
 function formatTrace(row: NamedTrace): string {

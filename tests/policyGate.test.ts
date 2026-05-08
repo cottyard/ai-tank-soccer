@@ -14,7 +14,12 @@ import {
   type RuntimeTraceSummary
 } from '../src/ai/policyGate';
 import { POLICY_ACTION_COUNT } from '../src/ai/policyActions';
-import { parseTraceRuntimePolicyArgs, runTraceRuntimePolicy } from '../scripts/trace-runtime-policy';
+import {
+  buildPolicyAnchorSamples,
+  parseTraceRuntimePolicyArgs,
+  runTraceRuntimePolicy,
+  runTraceRuntimePolicyDetailed
+} from '../scripts/trace-runtime-policy';
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 import type { EvaluationOptions, EvaluationResult } from '../src/ai/neuralTraining';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
@@ -170,6 +175,103 @@ describe('policy adoption gate', () => {
     expect(payload.decisionAnalysis?.comparison.seeds).toEqual([expect.objectContaining({ seed: 5 })]);
   });
 
+  it('exports low-pressure forward-loss decision states as policy anchors', () => {
+    const currentInputs = Array.from({ length: 36 }, (_, index) => index / 36);
+    const anchors = buildPolicyAnchorSamples({
+      comparedDecisions: 1,
+      alignedComparedDecisions: 1,
+      afterFinalActionDivergenceComparedDecisions: 0,
+      missingCurrentDecisions: 0,
+      missingCandidateDecisions: 0,
+      rawPolicyChanges: 1,
+      alignedRawPolicyChanges: 1,
+      afterFinalActionDivergenceRawPolicyChanges: 0,
+      tacticalActionChanges: 1,
+      finalActionChanges: 1,
+      lostPolicyChanges: 0,
+      alignedLostPolicyChanges: 0,
+      afterFinalActionDivergenceLostPolicyChanges: 0,
+      lostWithTacticalRollout: 0,
+      lostWithStaminaConserve: 0,
+      lostWithCriticalStamina: 0,
+      lostWithFlatPolicy: 0,
+      firstFinalActionDivergences: [{
+        seed: 71,
+        match: 0,
+        controlledTeam: 'red',
+        decisionIndex: 0,
+        frame: 18,
+        currentRawPolicyActionIndex: 8,
+        candidateRawPolicyActionIndex: 7,
+        currentFinalActionIndex: 8,
+        candidateFinalActionIndex: 7,
+        staminaRatio: 0.82,
+        ballDistance: 220,
+        ballSpeed: 20,
+        finishingPressure: 0.1,
+        ownGoalPressure: 0.05,
+        sideWallPressure: 0,
+        attackCornerPressure: 0,
+        ownCornerPressure: 0
+      }],
+      seeds: [],
+      samples: []
+    }, [decisionRecord({
+      seed: 71,
+      match: 0,
+      decisionIndex: 0,
+      frame: 18,
+      inputs: currentInputs,
+      rawPolicyActionIndex: 8,
+      finalActionIndex: 8,
+      staminaRatio: 0.82,
+      finishingPressure: 0.1,
+      ownGoalPressure: 0.05,
+      attackCornerPressure: 0,
+      ownCornerPressure: 0
+    })]);
+
+    expect(anchors.samples).toEqual([{
+      inputs: currentInputs,
+      actionIndex: 8,
+      team: 'red',
+      seed: 71,
+      match: 0,
+      frame: 18,
+      decisionIndex: 0,
+      tags: ['policyAnchor', 'lowPressureForwardLoss'],
+      weight: 1
+    }]);
+  });
+
+  it('writes exported policy anchors from the trace CLI', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-runtime-anchor-'));
+    const currentPath = join(workdir, 'current.json');
+    const candidatePath = join(workdir, 'candidate.json');
+    const anchorOutputPath = join(workdir, 'anchors.json');
+    const currentWeights = defaultNeuralWeights();
+    writeFileSync(currentPath, JSON.stringify({ weights: currentWeights }), 'utf8');
+    writeFileSync(candidatePath, JSON.stringify({ weights: currentWeights }), 'utf8');
+
+    const result = runTraceRuntimePolicyDetailed({
+      ...parseTraceRuntimePolicyArgs([]),
+      currentPath,
+      candidatePath,
+      anchorOutputPath,
+      seeds: [5],
+      matches: 1,
+      frames: 30,
+      decisionAnalysis: true
+    });
+
+    expect(result.policyAnchors?.samples.every((sample) => sample.inputs.length === 36)).toBe(true);
+    expect(existsSync(anchorOutputPath)).toBe(true);
+    const payload = JSON.parse(readFileSync(anchorOutputPath, 'utf8')) as {
+      samples: Array<{ inputs: number[]; actionIndex: number; tags: string[]; weight: number }>;
+    };
+    expect(payload.samples).toEqual(result.policyAnchors?.samples);
+  });
+
   it('compares runtime traces as behavior-visibility deltas', () => {
     const current = traceSummary({
       decisions: 100,
@@ -220,6 +322,17 @@ describe('policy adoption gate', () => {
     });
     expect(new Set(traced.decisions.map((record) => record.match))).toEqual(new Set([0, 1]));
     expect(traced.decisions.every((record) => record.seed === 5)).toBe(true);
+  });
+
+  it('includes network inputs in runtime decision records for state-anchor exports', () => {
+    const traced = traceRuntimePolicyDecisions(defaultNeuralWeights(), {
+      seeds: [5],
+      matches: 1,
+      frames: 30
+    });
+
+    expect(traced.decisions[0].inputs).toHaveLength(36);
+    expect(traced.decisions[0].inputs.every((value) => Number.isFinite(value))).toBe(true);
   });
 
   it('identifies policy argmax changes hidden by tactical rollout and stamina guards per seed', () => {
@@ -498,6 +611,7 @@ function decisionRecord(overrides: Partial<RuntimeDecisionTraceRecord>): Runtime
     frame: 0,
     team: 'red',
     tankId: 'red-0',
+    inputs: Array.from({ length: 36 }, () => 0),
     staminaRatio: 1,
     ballDistance: 100,
     ballSpeed: 0,

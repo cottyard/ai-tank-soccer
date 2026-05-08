@@ -28,6 +28,7 @@ export type NeuralDecisionTrace = {
   frame: number;
   team: Team;
   tankId: string;
+  inputs: number[];
   staminaRatio: number;
   ballDistance: number;
   ballSpeed: number;
@@ -671,6 +672,7 @@ function decisionTrace(
     frame: state.frame,
     team,
     tankId: tank.id,
+    inputs: extractTankInputs(state, team, tank),
     staminaRatio: staminaRatio(tank),
     ballDistance: ballDistanceToTank(state, tank),
     ballSpeed: Math.hypot(state.ball.velocity.x, state.ball.velocity.y),

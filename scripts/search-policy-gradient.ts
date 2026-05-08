@@ -45,6 +45,7 @@ export type PolicyGradientSearchVariant = {
   actionRetentionWeight: number;
   earlyForwardSafetyWeight: number;
   earlyForwardAnchorWeight: number;
+  policyAnchorWeight: number;
   opponentMode: PolicyGradientCliOptions['opponentMode'];
 };
 
@@ -108,6 +109,8 @@ export type PolicyGradientSearchOptions = {
   actionRetentionWeight: number;
   earlyForwardSafetyWeight: number;
   earlyForwardAnchorWeight: number;
+  policyAnchorData: string[];
+  policyAnchorWeight: number;
   opponentMode: string;
   gateMatches: number;
   gateFrames: number;
@@ -130,6 +133,7 @@ export type PolicyGradientSearchOptions = {
     actionRetentionWeights: number[];
     earlyForwardSafetyWeights: number[];
     earlyForwardAnchorWeights: number[];
+    policyAnchorWeights: number[];
     opponentModes: PolicyGradientCliOptions['opponentMode'][];
   };
   variants: PolicyGradientSearchVariant[];
@@ -178,6 +182,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
   const actionRetentionWeight = Math.max(0, numberArg(argv, '--action-retention-weight', 0));
   const earlyForwardSafetyWeight = clamp01(numberArg(argv, '--early-forward-safety-weight', 1));
   const earlyForwardAnchorWeight = Math.max(0, numberArg(argv, '--early-forward-anchor-weight', 0));
+  const policyAnchorData = stringArgs(argv, '--policy-anchor-data');
+  const policyAnchorWeight = Math.max(0, numberArg(argv, '--policy-anchor-weight', 0));
   const grid = {
     trainingSeeds: seedListArg(argv, '--training-seeds', [seed]),
     learningRates: numberListArg(argv, '--learning-rates', [0.001, 0.0008, 0.0006]),
@@ -200,6 +206,9 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       .map(clamp01)
       .filter((value, index, values) => values.indexOf(value) === index),
     earlyForwardAnchorWeights: numberListArg(argv, '--early-forward-anchor-weights', [earlyForwardAnchorWeight])
+      .map((value) => Math.max(0, value))
+      .filter((value, index, values) => values.indexOf(value) === index),
+    policyAnchorWeights: numberListArg(argv, '--policy-anchor-weights', [policyAnchorWeight])
       .map((value) => Math.max(0, value))
       .filter((value, index, values) => values.indexOf(value) === index),
     opponentModes: opponentModeListArg(argv, '--opponent-modes', [opponentMode])
@@ -232,6 +241,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
     actionRetentionWeight,
     earlyForwardSafetyWeight,
     earlyForwardAnchorWeight,
+    policyAnchorData,
+    policyAnchorWeight,
     opponentMode,
     gateMatches: positiveIntegerArg(argv, '--gate-matches', 2),
     gateFrames: positiveIntegerArg(argv, '--gate-frames', 360),
@@ -254,6 +265,8 @@ export function parsePolicyGradientSearchArgs(argv: readonly string[]): PolicyGr
       actionRetentionWeight,
       earlyForwardSafetyWeight,
       earlyForwardAnchorWeight,
+      policyAnchorData,
+      policyAnchorWeight,
       opponentMode
     }),
     grid,
@@ -298,6 +311,9 @@ export function runPolicyGradientSearch(
         : undefined,
       options.grid.earlyForwardAnchorWeights.length > 1 || variant.earlyForwardAnchorWeight > 0
         ? `anchor${slugNumber(variant.earlyForwardAnchorWeight)}`
+        : undefined,
+      options.grid.policyAnchorWeights.length > 1 || variant.policyAnchorWeight > 0
+        ? `stateanchor${slugNumber(variant.policyAnchorWeight)}`
         : undefined
     ].filter((part): part is string => part !== undefined).join('-');
     const candidatePath = join(options.outputDir, `${variantId}.json`);
@@ -321,6 +337,7 @@ export function runPolicyGradientSearch(
       actionRetentionWeight: variant.actionRetentionWeight,
       earlyForwardSafetyWeight: variant.earlyForwardSafetyWeight,
       earlyForwardAnchorWeight: variant.earlyForwardAnchorWeight,
+      policyAnchorWeight: variant.policyAnchorWeight,
       opponentMode: variant.opponentMode
     };
 
@@ -389,6 +406,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     console.log(`bestActionRetentionWeight=${result.best.variant.actionRetentionWeight}`);
     console.log(`bestEarlyForwardSafetyWeight=${result.best.variant.earlyForwardSafetyWeight}`);
     console.log(`bestEarlyForwardAnchorWeight=${result.best.variant.earlyForwardAnchorWeight}`);
+    console.log(`bestPolicyAnchorWeight=${result.best.variant.policyAnchorWeight}`);
     console.log(`bestCandidate=${result.bestCandidatePath}`);
     console.log(`summaryOut=${result.summaryPath}`);
   } catch (error) {
@@ -415,6 +433,8 @@ function parseTrainingOptions(
     actionRetentionWeight: number;
     earlyForwardSafetyWeight: number;
     earlyForwardAnchorWeight: number;
+    policyAnchorData: string[];
+    policyAnchorWeight: number;
     opponentMode: string;
   }
 ): PolicyGradientCliOptions {
@@ -457,6 +477,8 @@ function parseTrainingOptions(
     String(base.earlyForwardSafetyWeight),
     '--early-forward-anchor-weight',
     String(base.earlyForwardAnchorWeight),
+    '--policy-anchor-weight',
+    String(base.policyAnchorWeight),
     '--opponent-mode',
     base.opponentMode,
     '--league-current-weight',
@@ -468,6 +490,9 @@ function parseTrainingOptions(
 
   for (const path of stringArgs(argv, '--league-opponent-weights')) {
     trainingArgs.push('--league-opponent-weights', path);
+  }
+  for (const path of base.policyAnchorData) {
+    trainingArgs.push('--policy-anchor-data', path);
   }
   if (nativeBin) {
     trainingArgs.push('--native-bin', nativeBin);
@@ -718,7 +743,8 @@ function appendHistory(path: string, result: PolicyGradientSearchResult): void {
     bestRuntimeTacticalRewriteWeight: result.best.variant.runtimeTacticalRewriteWeight,
     bestActionRetentionWeight: result.best.variant.actionRetentionWeight,
     bestEarlyForwardSafetyWeight: result.best.variant.earlyForwardSafetyWeight,
-    bestEarlyForwardAnchorWeight: result.best.variant.earlyForwardAnchorWeight
+    bestEarlyForwardAnchorWeight: result.best.variant.earlyForwardAnchorWeight,
+    bestPolicyAnchorWeight: result.best.variant.policyAnchorWeight
   })}\n`, 'utf8');
 }
 
@@ -736,6 +762,7 @@ function expandVariants(grid: {
   actionRetentionWeights: readonly number[];
   earlyForwardSafetyWeights: readonly number[];
   earlyForwardAnchorWeights: readonly number[];
+  policyAnchorWeights: readonly number[];
   opponentModes: readonly PolicyGradientCliOptions['opponentMode'][];
 }): PolicyGradientSearchVariant[] {
   const variants: PolicyGradientSearchVariant[] = [];
@@ -756,23 +783,26 @@ function expandVariants(grid: {
                       for (const actionRetentionWeight of grid.actionRetentionWeights) {
                         for (const earlyForwardSafetyWeight of grid.earlyForwardSafetyWeights) {
                           for (const earlyForwardAnchorWeight of grid.earlyForwardAnchorWeights) {
-                            for (const opponentMode of grid.opponentModes) {
-                              variants.push({
-                                trainingSeed,
-                                learningRate,
-                                epochs,
-                                ppoClip,
-                                temperature,
-                                startStateMode,
-                                openStartRatio,
-                                advantageBaseline,
-                                runtimeWrapperMode,
-                                runtimeTacticalRewriteWeight,
-                                actionRetentionWeight,
-                                earlyForwardSafetyWeight,
-                                earlyForwardAnchorWeight,
-                                opponentMode
-                              });
+                            for (const policyAnchorWeight of grid.policyAnchorWeights) {
+                              for (const opponentMode of grid.opponentModes) {
+                                variants.push({
+                                  trainingSeed,
+                                  learningRate,
+                                  epochs,
+                                  ppoClip,
+                                  temperature,
+                                  startStateMode,
+                                  openStartRatio,
+                                  advantageBaseline,
+                                  runtimeWrapperMode,
+                                  runtimeTacticalRewriteWeight,
+                                  actionRetentionWeight,
+                                  earlyForwardSafetyWeight,
+                                  earlyForwardAnchorWeight,
+                                  policyAnchorWeight,
+                                  opponentMode
+                                });
+                              }
                             }
                           }
                         }

@@ -67,6 +67,10 @@ describe('policy-gradient promotion search', () => {
       '1,0.2',
       '--early-forward-anchor-weights',
       '0,0.4',
+      '--policy-anchor-data',
+      'training-runs/anchors.json',
+      '--policy-anchor-weights',
+      '0,0.5',
       '--opponent-modes',
       'self,league'
     ]);
@@ -104,10 +108,91 @@ describe('policy-gradient promotion search', () => {
         actionRetentionWeights: [0, 0.25],
         earlyForwardSafetyWeights: [1, 0.2],
         earlyForwardAnchorWeights: [0, 0.4],
+        policyAnchorWeights: [0, 0.5],
         opponentModes: ['self', 'league']
       }
     });
-    expect(options.variants).toHaveLength(6144);
+    expect(options.variants).toHaveLength(12288);
+  });
+
+  it('searches explicit policy-anchor weights as a traced-state anchor dimension', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'soccer-policy-search-state-anchor-'));
+    const bestPath = join(workdir, 'best.json');
+    const outputDir = join(workdir, 'candidates');
+    const anchorPath = join(workdir, 'anchors.json');
+    const trainedVariants: Array<{
+      policyAnchorWeight: number;
+      policyAnchorData: string[];
+      output?: string;
+    }> = [];
+    writeFileSync(bestPath, weightsJson(scoredWeights(10), 1), 'utf8');
+    writeFileSync(anchorPath, JSON.stringify({ samples: [] }), 'utf8');
+
+    const result = runPolicyGradientSearch({
+      ...parsePolicyGradientSearchArgs([
+        '--best',
+        bestPath,
+        '--output-dir',
+        outputDir,
+        '--history-output',
+        join(workdir, 'history.jsonl'),
+        '--seed',
+        '73',
+        '--learning-rates',
+        '0.001',
+        '--epochs-list',
+        '1',
+        '--ppo-clips',
+        '0.12',
+        '--temperatures',
+        '1.1',
+        '--policy-anchor-data',
+        anchorPath,
+        '--policy-anchor-weights',
+        '0,0.5'
+      ]),
+      standardSeeds: [19],
+      holdoutSeeds: [83],
+      gateMatches: 1,
+      gateFrames: 30
+    }, {
+      train: (training) => {
+        trainedVariants.push({
+          policyAnchorWeight: training.policyAnchorWeight,
+          policyAnchorData: training.policyAnchorData,
+          output: training.output
+        });
+        const score = 10 + training.policyAnchorWeight;
+        writeFileSync(training.output ?? join(workdir, 'missing.json'), weightsJson(scoredWeights(score), training.seed), 'utf8');
+        return {
+          weights: scoredWeights(score),
+          loss: 0.1,
+          trainedSamples: 4,
+          samples: 4,
+          frames: training.matches * training.frames,
+          redGoals: 2,
+          blueGoals: 0,
+          finalState: null as never
+        };
+      },
+      evaluate: scoreByFirstWeight
+    });
+
+    expect(result.rows).toHaveLength(2);
+    expect(trainedVariants).toEqual([
+      expect.objectContaining({ policyAnchorWeight: 0, policyAnchorData: [anchorPath] }),
+      expect.objectContaining({ policyAnchorWeight: 0.5, policyAnchorData: [anchorPath] })
+    ]);
+    expect(trainedVariants.map((variant) => variant.output)).toEqual([
+      expect.stringContaining('-stateanchor0.json'),
+      expect.stringContaining('-stateanchor0p5.json')
+    ]);
+    expect(result.best.variant.policyAnchorWeight).toBe(0.5);
+
+    const history = readFileSync(result.historyPath ?? '', 'utf8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(history[0]).toMatchObject({
+      bestPolicyAnchorWeight: 0.5
+    });
   });
 
   it('searches early forward anchor weights as an accepted-policy anchor dimension', () => {
@@ -1178,6 +1263,7 @@ function decisionTraceFixture(seed: number, finalActionIndex: number): RuntimeDe
       controlledTeam: 'red',
       team: 'red',
       tankId: 'red-0',
+      inputs: Array.from({ length: 36 }, () => 0),
       decisionIndex: 0,
       frame: 18,
       rawPolicyActionIndex: finalActionIndex,
