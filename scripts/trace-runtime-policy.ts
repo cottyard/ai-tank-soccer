@@ -23,6 +23,7 @@ type TraceRuntimePolicyOptions = {
   candidatePath?: string;
   outputPath?: string;
   anchorOutputPath?: string;
+  anchorNeighborRadius: number;
   seeds: number[];
   matches: number;
   frames: number;
@@ -62,6 +63,10 @@ export type PolicyAnchorExport = {
   samples: PolicyAnchorSample[];
 };
 
+export type PolicyAnchorBuildOptions = {
+  neighborRadius?: number;
+};
+
 const DEFAULT_STANDARD_SEEDS = [19, 31, 43, 57, 71];
 
 export function parseTraceRuntimePolicyArgs(argv: readonly string[]): TraceRuntimePolicyOptions {
@@ -70,6 +75,7 @@ export function parseTraceRuntimePolicyArgs(argv: readonly string[]): TraceRunti
     candidatePath: stringArg(argv, '--candidate'),
     outputPath: stringArg(argv, '--output'),
     anchorOutputPath: stringArg(argv, '--anchor-output'),
+    anchorNeighborRadius: nonNegativeIntegerArg(argv, '--anchor-neighbor-radius', 0),
     seeds: seedListArg(argv, '--seeds', DEFAULT_STANDARD_SEEDS),
     matches: positiveIntegerArg(argv, '--matches', 4),
     frames: positiveIntegerArg(argv, '--frames', 600),
@@ -92,7 +98,9 @@ export function runTraceRuntimePolicyDetailed(options: TraceRuntimePolicyOptions
     ? analyzeRuntimeDecisionVisibility(options)
     : undefined;
   const policyAnchors = options.anchorOutputPath && decisionAnalysis
-    ? buildPolicyAnchorSamples(decisionAnalysis.comparison, decisionAnalysis.currentDecisions)
+    ? buildPolicyAnchorSamples(decisionAnalysis.comparison, decisionAnalysis.currentDecisions, {
+        neighborRadius: options.anchorNeighborRadius
+      })
     : undefined;
   if (options.anchorOutputPath && policyAnchors) {
     ensureParentDirectory(options.anchorOutputPath);
@@ -182,39 +190,79 @@ function analyzeRuntimeDecisionVisibility(options: TraceRuntimePolicyOptions): T
 
 export function buildPolicyAnchorSamples(
   comparison: RuntimeDecisionTraceComparison,
-  currentDecisions: readonly RuntimeDecisionTraceRecord[]
+  currentDecisions: readonly RuntimeDecisionTraceRecord[],
+  options: PolicyAnchorBuildOptions = {}
 ): PolicyAnchorExport {
   const decisionsByKey = new Map(currentDecisions.map((record) => [decisionRecordKey(record), record]));
   const seen = new Set<string>();
   const samples: PolicyAnchorSample[] = [];
+  const neighborRadius = Math.max(0, Math.floor(options.neighborRadius ?? 0));
 
   for (const divergence of comparison.firstFinalActionDivergences) {
     if (!isLowPressureForwardLossDivergence(divergence)) {
       continue;
     }
-    const key = decisionRecordKey(divergence);
-    if (seen.has(key)) {
+
+    if (neighborRadius === 0) {
+      const current = decisionsByKey.get(decisionRecordKey(divergence));
+      addPolicyAnchorSample(samples, seen, current, ['policyAnchor', 'lowPressureForwardLoss']);
       continue;
     }
-    const current = decisionsByKey.get(key);
-    if (!current?.inputs || current.inputs.length !== 36 || current.inputs.some((value) => !Number.isFinite(value))) {
-      continue;
+
+    for (const current of currentDecisions) {
+      if (current.seed !== divergence.seed ||
+        current.match !== divergence.match ||
+        current.controlledTeam !== divergence.controlledTeam ||
+        Math.abs(current.decisionIndex - divergence.decisionIndex) > neighborRadius) {
+        continue;
+      }
+      addPolicyAnchorSample(
+        samples,
+        seen,
+        current,
+        current.decisionIndex === divergence.decisionIndex
+          ? ['policyAnchor', 'lowPressureForwardLoss']
+          : ['policyAnchor', 'lowPressureForwardLossNeighbor']
+      );
     }
-    seen.add(key);
-    samples.push({
-      inputs: [...current.inputs],
-      actionIndex: 8,
-      team: current.controlledTeam,
-      seed: current.seed,
-      match: current.match,
-      frame: current.frame,
-      decisionIndex: current.decisionIndex,
-      tags: ['policyAnchor', 'lowPressureForwardLoss'],
-      weight: 1
-    });
   }
 
   return { samples };
+}
+
+function addPolicyAnchorSample(
+  samples: PolicyAnchorSample[],
+  seen: Set<string>,
+  current: RuntimeDecisionTraceRecord | undefined,
+  tags: string[]
+): void {
+  if (!current || seen.has(decisionRecordKey(current)) || !isAnchorableFullForwardDecision(current)) {
+    return;
+  }
+  seen.add(decisionRecordKey(current));
+  samples.push({
+    inputs: [...current.inputs],
+    actionIndex: 8,
+    team: current.controlledTeam,
+    seed: current.seed,
+    match: current.match,
+    frame: current.frame,
+    decisionIndex: current.decisionIndex,
+    tags,
+    weight: 1
+  });
+}
+
+function isAnchorableFullForwardDecision(record: RuntimeDecisionTraceRecord): boolean {
+  return record.rawPolicyActionIndex === 8 &&
+    record.finalActionIndex === 8 &&
+    record.staminaRatio > 0.5 &&
+    record.finishingPressure < 0.2 &&
+    record.ownGoalPressure < 0.2 &&
+    record.attackCornerPressure < 0.2 &&
+    record.ownCornerPressure < 0.2 &&
+    record.inputs.length === 36 &&
+    record.inputs.every((value) => Number.isFinite(value));
 }
 
 function isLowPressureForwardLossDivergence(
@@ -353,6 +401,10 @@ function numberArg(argv: readonly string[], name: string, fallback: number): num
 
 function positiveIntegerArg(argv: readonly string[], name: string, fallback: number): number {
   return Math.max(1, Math.floor(numberArg(argv, name, fallback)));
+}
+
+function nonNegativeIntegerArg(argv: readonly string[], name: string, fallback: number): number {
+  return Math.max(0, Math.floor(numberArg(argv, name, fallback)));
 }
 
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('/trace-runtime-policy.ts') ||

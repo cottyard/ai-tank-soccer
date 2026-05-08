@@ -244,6 +244,109 @@ describe('policy adoption gate', () => {
     }]);
   });
 
+  it('can export nearby low-pressure full-forward states around forward-loss divergences', () => {
+    const anchors = buildPolicyAnchorSamples({
+      comparedDecisions: 1,
+      alignedComparedDecisions: 1,
+      afterFinalActionDivergenceComparedDecisions: 0,
+      missingCurrentDecisions: 0,
+      missingCandidateDecisions: 0,
+      rawPolicyChanges: 1,
+      alignedRawPolicyChanges: 1,
+      afterFinalActionDivergenceRawPolicyChanges: 0,
+      tacticalActionChanges: 1,
+      finalActionChanges: 1,
+      lostPolicyChanges: 0,
+      alignedLostPolicyChanges: 0,
+      afterFinalActionDivergenceLostPolicyChanges: 0,
+      lostWithTacticalRollout: 0,
+      lostWithStaminaConserve: 0,
+      lostWithCriticalStamina: 0,
+      lostWithFlatPolicy: 0,
+      firstFinalActionDivergences: [{
+        seed: 109,
+        match: 3,
+        controlledTeam: 'blue',
+        decisionIndex: 5,
+        frame: 30,
+        currentRawPolicyActionIndex: 8,
+        candidateRawPolicyActionIndex: 5,
+        currentFinalActionIndex: 8,
+        candidateFinalActionIndex: 5,
+        staminaRatio: 0.84,
+        ballDistance: 140,
+        ballSpeed: 15,
+        finishingPressure: 0.08,
+        ownGoalPressure: 0.06,
+        sideWallPressure: 0,
+        attackCornerPressure: 0,
+        ownCornerPressure: 0
+      }],
+      seeds: [],
+      samples: []
+    }, [
+      decisionRecord({
+        seed: 109,
+        match: 3,
+        controlledTeam: 'blue',
+        decisionIndex: 3,
+        frame: 18,
+        inputs: Array.from({ length: 36 }, () => 0.3),
+        rawPolicyActionIndex: 8,
+        finalActionIndex: 8,
+        staminaRatio: 0.9,
+        finishingPressure: 0.1,
+        ownGoalPressure: 0.1
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 3,
+        controlledTeam: 'blue',
+        decisionIndex: 5,
+        frame: 30,
+        inputs: Array.from({ length: 36 }, () => 0.5),
+        rawPolicyActionIndex: 8,
+        finalActionIndex: 8,
+        staminaRatio: 0.84,
+        finishingPressure: 0.08,
+        ownGoalPressure: 0.06
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 3,
+        controlledTeam: 'blue',
+        decisionIndex: 7,
+        frame: 42,
+        inputs: Array.from({ length: 36 }, () => 0.7),
+        rawPolicyActionIndex: 8,
+        finalActionIndex: 8,
+        staminaRatio: 0.8,
+        finishingPressure: 0.15,
+        ownGoalPressure: 0.05
+      }),
+      decisionRecord({
+        seed: 109,
+        match: 3,
+        controlledTeam: 'blue',
+        decisionIndex: 8,
+        frame: 48,
+        inputs: Array.from({ length: 36 }, () => 0.8),
+        rawPolicyActionIndex: 8,
+        finalActionIndex: 8,
+        staminaRatio: 0.8,
+        finishingPressure: 0.15,
+        ownGoalPressure: 0.05
+      })
+    ], { neighborRadius: 2 });
+
+    expect(anchors.samples.map((sample) => sample.decisionIndex)).toEqual([3, 5, 7]);
+    expect(anchors.samples.map((sample) => sample.tags)).toEqual([
+      ['policyAnchor', 'lowPressureForwardLossNeighbor'],
+      ['policyAnchor', 'lowPressureForwardLoss'],
+      ['policyAnchor', 'lowPressureForwardLossNeighbor']
+    ]);
+  });
+
   it('writes exported policy anchors from the trace CLI', () => {
     const workdir = mkdtempSync(join(tmpdir(), 'soccer-runtime-anchor-'));
     const currentPath = join(workdir, 'current.json');
@@ -270,6 +373,15 @@ describe('policy adoption gate', () => {
       samples: Array<{ inputs: number[]; actionIndex: number; tags: string[]; weight: number }>;
     };
     expect(payload.samples).toEqual(result.policyAnchors?.samples);
+  });
+
+  it('parses the trace anchor neighbor radius', () => {
+    const options = parseTraceRuntimePolicyArgs([
+      '--anchor-neighbor-radius',
+      '4'
+    ]);
+
+    expect(options.anchorNeighborRadius).toBe(4);
   });
 
   it('compares runtime traces as behavior-visibility deltas', () => {
