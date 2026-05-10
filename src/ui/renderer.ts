@@ -19,6 +19,21 @@ type TrailPoint = {
   frame: number;
 };
 
+type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type TankBatteryLayout = {
+  body: Rect;
+  cap: Rect;
+  fill: Rect & { maxWidth: number };
+  cellGap: number;
+  cornerRadius: number;
+};
+
 const TEAM_COLORS: Record<Team, string> = {
   red: '#e5484d',
   blue: '#3b82f6'
@@ -189,7 +204,7 @@ export class FieldRenderer {
     const rightPower = command?.rightTrack ?? 0;
     this.drawTrack(-bodyWidth * 0.42, bodyLength, trackThickness, leftPower, frame);
     this.drawTrack(bodyWidth * 0.42, bodyLength, trackThickness, rightPower, frame);
-    this.drawStaminaBar(tank, bodyLength, bodyWidth);
+    this.drawStaminaBattery(tank, bodyLength, bodyWidth);
     ctx.restore();
   }
 
@@ -230,20 +245,58 @@ export class FieldRenderer {
     ctx.stroke();
   }
 
-  private drawStaminaBar(tank: Tank, bodyLength: number, bodyWidth: number): void {
+  private drawStaminaBattery(tank: Tank, bodyLength: number, bodyWidth: number): void {
     const ctx = this.ctx;
-    const width = bodyLength * 0.74;
-    const height = Math.max(4, bodyWidth * 0.06);
-    const x = -width / 2;
-    const y = -bodyWidth * 0.5 - height - 3;
     const ratio = Math.max(0, Math.min(1, tank.stamina / tank.maxStamina));
+    const layout = tankBatteryLayout(bodyLength, bodyWidth, ratio);
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
-    roundRect(ctx, x, y, width, height, 3);
+    ctx.save();
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.55)';
+    ctx.shadowBlur = Math.max(2, layout.body.height * 0.35);
+    ctx.shadowOffsetY = Math.max(1, layout.body.height * 0.12);
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.76)';
+    roundRect(ctx, layout.body.x, layout.body.y, layout.body.width, layout.body.height, layout.cornerRadius);
     ctx.fill();
-    ctx.fillStyle = ratio > 0.35 ? '#bef264' : '#fbbf24';
-    roundRect(ctx, x, y, width * ratio, height, 3);
+
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.82)';
+    roundRect(ctx, layout.cap.x, layout.cap.y, layout.cap.width, layout.cap.height, layout.cap.width * 0.45);
     ctx.fill();
+
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.54)';
+    ctx.lineWidth = Math.max(1, layout.body.height * 0.08);
+    roundRect(ctx, layout.body.x, layout.body.y, layout.body.width, layout.body.height, layout.cornerRadius);
+    ctx.stroke();
+
+    ctx.save();
+    roundRect(ctx, layout.fill.x, layout.fill.y, layout.fill.maxWidth, layout.fill.height, layout.cornerRadius * 0.58);
+    ctx.clip();
+    ctx.fillStyle = staminaColor(ratio);
+    roundRect(ctx, layout.fill.x, layout.fill.y, layout.fill.width, layout.fill.height, layout.cornerRadius * 0.58);
+    ctx.fill();
+
+    const cellCount = 4;
+    const cellWidth = (layout.fill.maxWidth - layout.cellGap * (cellCount - 1)) / cellCount;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+    for (let index = 1; index < cellCount; index += 1) {
+      const x = layout.fill.x + cellWidth * index + layout.cellGap * (index - 0.5);
+      ctx.fillRect(x, layout.fill.y, Math.max(1, layout.cellGap * 0.38), layout.fill.height);
+    }
+
+    const sheen = ctx.createLinearGradient(0, layout.fill.y, 0, layout.fill.y + layout.fill.height);
+    sheen.addColorStop(0, 'rgba(255, 255, 255, 0.36)');
+    sheen.addColorStop(0.52, 'rgba(255, 255, 255, 0.06)');
+    sheen.addColorStop(1, 'rgba(15, 23, 42, 0.22)');
+    ctx.fillStyle = sheen;
+    roundRect(ctx, layout.fill.x, layout.fill.y, layout.fill.width, layout.fill.height, layout.cornerRadius * 0.58);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(2, 6, 23, 0.64)';
+    ctx.lineWidth = Math.max(1, layout.body.height * 0.07);
+    roundRect(ctx, layout.fill.x, layout.fill.y, layout.fill.maxWidth, layout.fill.height, layout.cornerRadius * 0.58);
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawBall(position: Vec2, radius: number): void {
@@ -332,6 +385,47 @@ export function makeTransform(width: number, height: number): Transform {
     offsetX: (width - fieldWidth) / 2,
     offsetY: (height - fieldHeight) / 2
   };
+}
+
+export function tankBatteryLayout(bodyLength: number, bodyWidth: number, ratio: number): TankBatteryLayout {
+  const width = bodyLength * 0.52;
+  const height = Math.max(7, bodyWidth * 0.115);
+  const x = -width / 2;
+  const y = -height / 2;
+  const padding = Math.max(1.5, height * 0.2);
+  const capWidth = Math.max(2.5, height * 0.22);
+  const capHeight = height * 0.52;
+  const fillMaxWidth = Math.max(0, width - padding * 2);
+  const fillWidth = fillMaxWidth * Math.max(0, Math.min(1, ratio));
+
+  return {
+    body: { x, y, width, height },
+    cap: {
+      x: x + width + Math.max(1, height * 0.08),
+      y: -capHeight / 2,
+      width: capWidth,
+      height: capHeight
+    },
+    fill: {
+      x: x + padding,
+      y: y + padding,
+      width: fillWidth,
+      height: Math.max(0, height - padding * 2),
+      maxWidth: fillMaxWidth
+    },
+    cellGap: Math.max(1, height * 0.13),
+    cornerRadius: Math.max(2, height * 0.28)
+  };
+}
+
+function staminaColor(ratio: number): string {
+  if (ratio <= 0.18) {
+    return '#fb7185';
+  }
+  if (ratio <= 0.35) {
+    return '#fbbf24';
+  }
+  return '#a3e635';
 }
 
 function roundRect(
