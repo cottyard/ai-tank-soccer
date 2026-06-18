@@ -52,6 +52,7 @@ Pure PPO/neural training is now diagnostic only. It can still be used to generat
 2. Slow pinned attacking-corner balls now use a longer tactical rollout horizon.
 3. Slow high-pressure attacking stalls can use a two-step tactical rollout sequence.
 4. Slow central finish stalls can use a shorter two-step tactical rollout sequence.
+5. Fast own-goal threats now use a longer defensive tactical rollout horizon.
 
 Previous behavior: `shouldUseTacticalRollout` skipped rollout in attacking corners if an opponent was near the ball. In traced fragile seeds, this let the neural policy keep low-value single-track corner actions and left the ball pinned near the end wall or side wall. The lesson was converted into code by letting attacking-corner states use tactical rollout even under opponent pressure, and into tests by asserting that opponent-close attacking corners still run rollout and can override a bad raw action.
 
@@ -61,11 +62,13 @@ The third loop found that some near-goal and side-wall stalls are not fixed by f
 
 The fourth loop split central finish stalls from wall/corner stalls. Seed `57:1` had a slow ball in the goal lane with enough stamina and distance for a setup touch, but single-action rollout repeatedly preferred stop. Enumerating two-action sequences from the exact frame showed that a short setup action followed by a follow-up push can convert the chance. The accepted change adds a shorter sequence profile only for slow, high-stamina, central goal-mouth states; the existing longer two-step profile remains for wider attacking stalls.
 
+The fifth loop targeted the only remaining standard-gate loss, seed `57:0`. The failure happened early: a fast ball in the own-goal lane was moving toward the red goal while the runtime rollout used an 18-frame window that preferred short-term reverse pressure. Longer diagnostic windows saw that this path carried own-goal risk, so fast own-goal threats now use a 72-frame defensive rollout horizon. A regression state captures the exact defensive danger pattern and verifies that the longer default horizon rejects the short-horizon reverse action.
+
 Gate comparison using the same accepted weights:
 
 | Gate | Before | After |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `14-1`, `avgScore=402.169`, `avgWin=0.775`, `avgBp=0.254` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `14-0`, `avgScore=433.364`, `avgWin=0.800`, `avgBp=0.242` |
 | Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289` | goals `19-0`, `avgScore=565.393`, `avgWin=0.875`, `avgBp=0.163` |
 
 Per-seed gains from this HL change:
@@ -81,6 +84,7 @@ Per-seed gains from this HL change:
 - Holdout seed `109` improved from the post-corner `2-0`, score `328.737` to `3-0`, score `455.772`.
 - Holdout seed `127` improved from the post-corner `5-0`, score `749.371` to `6-0`, score `876.373`.
 - Standard seed `57` improved again from the post-two-step `2-1`, score `161.100`, win `0.625` to `3-1`, score `294.054`, win `0.750`.
+- Standard seed `57` improved once more after the own-goal defensive horizon change from `3-1`, score `294.054`, win `0.750` to `3-0`, score `450.030`, win `0.875`.
 - Standard seed `31` remains below the session-start baseline (`2-0`, score `324.809` to `1-0`, score `195.901`); this is still the next standard-gate diagnosis target.
 
 Rejected follow-up ideas from the same session:
@@ -91,14 +95,15 @@ Rejected follow-up ideas from the same session:
 - A medium-horizon rollout for slow attacking side-wall balls helped a local `19:3` trace frame but produced no aggregate gate change; reverted until a scoring or contact model explains why the longer action does not convert.
 - A goal-mouth setup / end-wall near-miss scoring probe fixed the local `31:2` path in one broad variant and raised a narrower variant's standard goals/score to `14-1`, `avgScore=400.090`, but standard `avgWin` stayed `0.750`, seed `31` remained `1-0`, holdout slipped to goals `18-0`, `avgWin=0.850`, and runtime gates slowed down. Keep the lesson as diagnostic only: near-miss scoring needs a cleaner contact/sequence model before it is worth committing.
 - A narrow "keep raw forward instead of rollout stop" gate for high-stamina central finish stalls reproduced the `57:1` local pattern but did not change the standard gate: goals `13-1`, `avgScore=375.610`, `avgWin=0.750`. Do not keep raw-forward guards unless they create actual match conversion.
+- A narrow side-wall finish sequence probe for `31:2` targeted the exact frame where the ball was deep in the attacking corner, rolling into the side wall at speed `18.939`, and the tank still had `0.593` stamina. A `12+48` two-step profile was locally plausible and did not hurt holdout, but it produced no standard-gate improvement: standard stayed goals `14-1`, `avgScore=402.135`, `avgWin=0.775`; holdout stayed goals `19-0`, `avgScore=565.393`, `avgWin=0.875`. Revert this class of wall-edge sequence unless the rollout evaluator or continuation model proves an actual match conversion.
 
 Diagnostic tooling added after the corner fixes:
 
 - `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
-- Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `14-1`, wins `12`, draws `7`, losses `1`.
+- Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `14-1`, wins `12`, draws `7`, losses `1`; the fast own-goal defensive horizon improves it again to goals `14-0`, wins `13`, draws `7`, losses `0`.
 - Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
-Decision: keep the four HL runtime changes if full tests/build pass. Standard win proxy improves from `0.725` at session start to `0.775` (+6.9%), while holdout win proxy improves from `0.750` to `0.875` (+16.7%) and holdout goals rise from `11-0` to `19-0`. The objective is closer but not fully complete by the example 10% standard win-rate threshold; continue with seed `31` and the remaining standard draw/loss cases.
+Decision: keep the five HL runtime changes if full tests/build pass. Standard win proxy improves from `0.725` at session start to `0.800` (+10.3%), while holdout win proxy improves from `0.750` to `0.875` (+16.7%) and holdout goals rise from `11-0` to `19-0`. The rough +10% standard objective is now met; continue with seed `31` as the main remaining under-baseline standard case.
 
 ## Architecture
 

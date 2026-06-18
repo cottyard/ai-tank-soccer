@@ -23,6 +23,7 @@ export type TacticalActionOptions = {
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
 const PINNED_ATTACK_CORNER_ROLLOUT_FRAMES = 120;
+const URGENT_OWN_GOAL_ROLLOUT_FRAMES = 72;
 const ATTACK_STALL_SEQUENCE_FIRST_FRAMES = 24;
 const ATTACK_STALL_SEQUENCE_SECOND_FRAMES = 66;
 const CENTRAL_FINISH_SEQUENCE_FIRST_FRAMES = 6;
@@ -89,6 +90,10 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
 }
 
 function defaultRolloutFrames(options: TacticalActionOptions): number {
+  if (isUrgentOwnGoalThreat(options.state, options.team)) {
+    return URGENT_OWN_GOAL_ROLLOUT_FRAMES;
+  }
+
   return isSlowPinnedAttackingCorner(options.state, options.team)
     ? PINNED_ATTACK_CORNER_ROLLOUT_FRAMES
     : DEFAULT_ROLLOUT_FRAMES;
@@ -207,6 +212,19 @@ function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): bo
 
   return attackX(team, ball.position.x) > FIELD.length - FIELD.ballRadius - 115 &&
     sideWallDistance(ball.position.y) < FIELD.ballRadius + 58;
+}
+
+function isUrgentOwnGoalThreat(state: Readonly<GameState>, team: Team): boolean {
+  const sign = team === 'red' ? 1 : -1;
+  const ballAttackX = attackX(team, state.ball.position.x);
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  const incomingSpeed = -state.ball.velocity.x * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+
+  return ballAttackX < FIELD.length * 0.28 &&
+    lane > 0.72 &&
+    incomingSpeed > 120 &&
+    ballSpeed > 140;
 }
 
 function tacticalSequenceProfile(state: Readonly<GameState>, team: Team): TacticalSequenceProfile | undefined {
