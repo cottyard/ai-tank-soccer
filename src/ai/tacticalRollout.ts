@@ -25,16 +25,21 @@ const DEFAULT_ROLLOUT_FRAMES = 18;
 const PINNED_ATTACK_CORNER_ROLLOUT_FRAMES = 120;
 const ATTACK_STALL_SEQUENCE_FIRST_FRAMES = 24;
 const ATTACK_STALL_SEQUENCE_SECOND_FRAMES = 66;
+const CENTRAL_FINISH_SEQUENCE_FIRST_FRAMES = 6;
+const CENTRAL_FINISH_SEQUENCE_SECOND_FRAMES = 54;
 const DEFAULT_IMPROVEMENT_MARGIN = 0.018;
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
   const rolloutFrames = Math.max(1, Math.floor(options.rolloutFrames ?? defaultRolloutFrames(options)));
-  const useSequence = options.rolloutFrames === undefined && shouldUseAttackStallSequence(options.state, options.team);
+  const sequenceProfile = options.rolloutFrames === undefined
+    ? tacticalSequenceProfile(options.state, options.team)
+    : undefined;
   const policyActionIndex = clampActionIndex(options.policyActionIndex);
-  const policyScore = useSequence
+  const policyScore = sequenceProfile
     ? scoreTacticalActionSequence({
         ...options,
-        actionIndex: policyActionIndex
+        actionIndex: policyActionIndex,
+        sequenceProfile
       })
     : scoreTacticalAction({
         ...options,
@@ -53,10 +58,11 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
       continue;
     }
 
-    const score = useSequence
+    const score = sequenceProfile
       ? scoreTacticalActionSequence({
           ...options,
-          actionIndex
+          actionIndex,
+          sequenceProfile
         })
       : scoreTacticalAction({
           ...options,
@@ -124,7 +130,14 @@ function scoreTacticalAction(options: ScoreOptions): number {
     -trackCost * 0.004;
 }
 
-function scoreTacticalActionSequence(options: Omit<ScoreOptions, 'rolloutFrames'>): number {
+type TacticalSequenceProfile = {
+  firstFrames: number;
+  secondFrames: number;
+};
+
+function scoreTacticalActionSequence(
+  options: Omit<ScoreOptions, 'rolloutFrames'> & { sequenceProfile: TacticalSequenceProfile }
+): number {
   let best = Number.NEGATIVE_INFINITY;
   for (let followupActionIndex = 0; followupActionIndex < POLICY_ACTION_COUNT; followupActionIndex += 1) {
     const score = scoreTacticalActionSequencePair({
@@ -139,7 +152,10 @@ function scoreTacticalActionSequence(options: Omit<ScoreOptions, 'rolloutFrames'
 }
 
 function scoreTacticalActionSequencePair(
-  options: Omit<ScoreOptions, 'rolloutFrames'> & { followupActionIndex: number }
+  options: Omit<ScoreOptions, 'rolloutFrames'> & {
+    followupActionIndex: number;
+    sequenceProfile: TacticalSequenceProfile;
+  }
 ): number {
   const initial = options.state as GameState;
   const simulated = cloneState(initial);
@@ -163,10 +179,10 @@ function scoreTacticalActionSequencePair(
     followupCommands[opponent.id] = opponentCommand;
   }
 
-  for (let frame = 0; frame < ATTACK_STALL_SEQUENCE_FIRST_FRAMES; frame += 1) {
+  for (let frame = 0; frame < options.sequenceProfile.firstFrames; frame += 1) {
     stepGame(simulated, firstCommands, FIXED_DT);
   }
-  for (let frame = 0; frame < ATTACK_STALL_SEQUENCE_SECOND_FRAMES; frame += 1) {
+  for (let frame = 0; frame < options.sequenceProfile.secondFrames; frame += 1) {
     stepGame(simulated, followupCommands, FIXED_DT);
   }
 
@@ -191,6 +207,24 @@ function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): bo
 
   return attackX(team, ball.position.x) > FIELD.length - FIELD.ballRadius - 115 &&
     sideWallDistance(ball.position.y) < FIELD.ballRadius + 58;
+}
+
+function tacticalSequenceProfile(state: Readonly<GameState>, team: Team): TacticalSequenceProfile | undefined {
+  if (shouldUseCentralFinishSequence(state, team)) {
+    return {
+      firstFrames: CENTRAL_FINISH_SEQUENCE_FIRST_FRAMES,
+      secondFrames: CENTRAL_FINISH_SEQUENCE_SECOND_FRAMES
+    };
+  }
+
+  if (shouldUseAttackStallSequence(state, team)) {
+    return {
+      firstFrames: ATTACK_STALL_SEQUENCE_FIRST_FRAMES,
+      secondFrames: ATTACK_STALL_SEQUENCE_SECOND_FRAMES
+    };
+  }
+
+  return undefined;
 }
 
 function shouldUseAttackStallSequence(state: Readonly<GameState>, team: Team): boolean {
@@ -220,6 +254,30 @@ function shouldUseAttackStallSequence(state: Readonly<GameState>, team: Team): b
   const sideWallPinned = sideWallDistance(state.ball.position.y) < FIELD.ballRadius + 16;
   return (ballAttackX > FIELD.length - 245 && lane > 0.45) ||
     (ballAttackX > FIELD.length - 210 && sideWallPinned);
+}
+
+function shouldUseCentralFinishSequence(state: Readonly<GameState>, team: Team): boolean {
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (ballSpeed > 12) {
+    return false;
+  }
+
+  const tank = controlledTank(state as GameState, team);
+  if (!tank || staminaRatio(tank) < 0.78) {
+    return false;
+  }
+
+  const ballDistance = Math.hypot(
+    tank.position.x - state.ball.position.x,
+    tank.position.y - state.ball.position.y
+  );
+  if (ballDistance < FIELD.tankRadius * 1.08 || ballDistance > FIELD.tankRadius * 1.55) {
+    return false;
+  }
+
+  const ballAttackX = attackX(team, state.ball.position.x);
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  return ballAttackX > FIELD.length - 135 && lane > 0.9;
 }
 
 function controlledTank(state: GameState, team: Team): Tank | undefined {
