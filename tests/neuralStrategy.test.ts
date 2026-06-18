@@ -334,13 +334,45 @@ describe('neural tank soccer strategy', () => {
     ownBlue.position = { x: 120, y: FIELD.ballRadius + 75 };
 
     expect(createNeuralStrategy().decide(attackCorner, 'red')['red-0']).not.toEqual({
-      leftTrack: -1,
-      rightTrack: -1
+      leftTrack: 0,
+      rightTrack: 0
     });
     expect(createNeuralStrategy().decide(ownCorner, 'red')['red-0']).not.toEqual({
       leftTrack: -1,
       rightTrack: 1
     });
+  });
+
+  it('uses tactical rollout in attacking corners even when the opponent is close to the ball', () => {
+    const state = createInitialState();
+    const red = tank(state, 'red');
+    const blue = tank(state, 'blue');
+    state.ball.position = {
+      x: FIELD.length - FIELD.ballRadius - 18,
+      y: FIELD.ballRadius + 16
+    };
+    state.ball.velocity = { x: 0, y: 0 };
+    red.position = { x: FIELD.length - 230, y: FIELD.ballRadius + 130 };
+    red.angle = Math.PI;
+    red.stamina = red.maxStamina;
+    blue.position = { x: FIELD.length - 108, y: FIELD.ballRadius + 58 };
+    blue.angle = Math.PI;
+
+    let finalTrace: { tacticalRolloutUsed: boolean; tacticalRolloutChanged: boolean } | undefined;
+    const strategy = createNeuralStrategy({
+      weights: preferredActionWeights(8),
+      onDecision: (trace) => {
+        finalTrace = trace;
+      }
+    });
+
+    const command = strategy.decide(state, 'red')['red-0'];
+
+    expect(finalTrace).toMatchObject({
+      tacticalRolloutUsed: true,
+      tacticalRolloutChanged: true
+    });
+    expect(command).not.toEqual({ leftTrack: 1, rightTrack: 1 });
   });
 
   it('evaluates neural weights deterministically across 1v1 tactical scenarios', () => {

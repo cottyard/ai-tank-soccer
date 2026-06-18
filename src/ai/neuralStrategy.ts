@@ -322,9 +322,6 @@ function shouldUseTacticalRollout(
   }
 
   if (Math.max(pressures.attackCorner, pressures.ownCorner) > 0.52) {
-    if (pressures.attackCorner >= pressures.ownCorner && opponentNearBall(state, team, FIELD.tankRadius * 1.9)) {
-      return false;
-    }
     return true;
   }
 
@@ -374,12 +371,6 @@ function isLooseBallContest(state: Readonly<GameState>, team: Team, tank: Tank):
   const contested = opponentDistance < ballDistance + FIELD.tankRadius * 1.25;
 
   return ballSpeed < 160 && (midfield || contested);
-}
-
-function opponentNearBall(state: Readonly<GameState>, team: Team, distance: number): boolean {
-  const opponent = nearestOpponentTank(state, team);
-  return !!opponent &&
-    Math.hypot(opponent.position.x - state.ball.position.x, opponent.position.y - state.ball.position.y) <= distance;
 }
 
 function decisiveBallContact(
