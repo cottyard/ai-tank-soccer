@@ -85,6 +85,8 @@ Rejected follow-up ideas from the same session:
 - A sandboxed force-forward rule for low-speed near-goal balls produced only tiny score deltas and no standard win-proxy gain; it is not worth committing.
 - A guarded "keep active policy action" rule for slow high-pressure finishes avoided one local stall but did not improve the gate: standard stayed goals `12-1`, `avgWin=0.725` and score slipped slightly to `346.993`; reverted.
 - A medium-horizon rollout for slow attacking side-wall balls helped a local `19:3` trace frame but produced no aggregate gate change; reverted until a scoring or contact model explains why the longer action does not convert.
+- A goal-mouth setup / end-wall near-miss scoring probe fixed the local `31:2` path in one broad variant and raised a narrower variant's standard goals/score to `14-1`, `avgScore=400.090`, but standard `avgWin` stayed `0.750`, seed `31` remained `1-0`, holdout slipped to goals `18-0`, `avgWin=0.850`, and runtime gates slowed down. Keep the lesson as diagnostic only: near-miss scoring needs a cleaner contact/sequence model before it is worth committing.
+- A narrow "keep raw forward instead of rollout stop" gate for high-stamina central finish stalls reproduced the `57:1` local pattern but did not change the standard gate: goals `13-1`, `avgScore=375.610`, `avgWin=0.750`. Do not keep raw-forward guards unless they create actual match conversion.
 
 Diagnostic tooling added after the corner fixes:
 
@@ -248,9 +250,10 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 1. Use `scripts/diagnose-runtime-failures.ts` to compare the remaining standard draw/loss cases after each candidate change, especially `31:0/1/2`, `57:1`, and `19:3`.
 2. Study why seed `31` still loses one expected standard goal after the two-step rollout. Candidate mechanisms should inspect the exact match `0/1/2` trajectories and avoid broad near-goal force rules.
-3. For attacking side-wall/corner stalls, inspect whether the rollout simulation needs opponent action assumptions or a contact-progress term before increasing horizons further.
-4. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
-5. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
+3. Study standard seed `57:1` as a separate central finish stall. The failed near-miss probe does not address it; inspect whether repeated stop decisions near the goal mouth need a narrow contact-progress sequence rather than a global scoring bonus.
+4. For attacking side-wall/corner stalls, inspect whether the rollout simulation needs opponent action assumptions or a contact-progress term before increasing horizons further.
+5. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
+6. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
 
 ## Repository Hygiene
 
