@@ -23,16 +23,24 @@ export type TacticalActionOptions = {
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
 const PINNED_ATTACK_CORNER_ROLLOUT_FRAMES = 120;
+const ATTACK_STALL_SEQUENCE_FIRST_FRAMES = 24;
+const ATTACK_STALL_SEQUENCE_SECOND_FRAMES = 66;
 const DEFAULT_IMPROVEMENT_MARGIN = 0.018;
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
   const rolloutFrames = Math.max(1, Math.floor(options.rolloutFrames ?? defaultRolloutFrames(options)));
+  const useSequence = options.rolloutFrames === undefined && shouldUseAttackStallSequence(options.state, options.team);
   const policyActionIndex = clampActionIndex(options.policyActionIndex);
-  const policyScore = scoreTacticalAction({
-    ...options,
-    actionIndex: policyActionIndex,
-    rolloutFrames
-  });
+  const policyScore = useSequence
+    ? scoreTacticalActionSequence({
+        ...options,
+        actionIndex: policyActionIndex
+      })
+    : scoreTacticalAction({
+        ...options,
+        actionIndex: policyActionIndex,
+        rolloutFrames
+      });
   const actionScores = Array.from({ length: POLICY_ACTION_COUNT }, () => Number.NEGATIVE_INFINITY);
   actionScores[policyActionIndex] = policyScore;
   let best = {
@@ -45,11 +53,16 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
       continue;
     }
 
-    const score = scoreTacticalAction({
-      ...options,
-      actionIndex,
-      rolloutFrames
-    });
+    const score = useSequence
+      ? scoreTacticalActionSequence({
+          ...options,
+          actionIndex
+        })
+      : scoreTacticalAction({
+          ...options,
+          actionIndex,
+          rolloutFrames
+        });
     actionScores[actionIndex] = score;
     if (score > best.score + 1e-9) {
       best = { actionIndex, score };
@@ -111,6 +124,64 @@ function scoreTacticalAction(options: ScoreOptions): number {
     -trackCost * 0.004;
 }
 
+function scoreTacticalActionSequence(options: Omit<ScoreOptions, 'rolloutFrames'>): number {
+  let best = Number.NEGATIVE_INFINITY;
+  for (let followupActionIndex = 0; followupActionIndex < POLICY_ACTION_COUNT; followupActionIndex += 1) {
+    const score = scoreTacticalActionSequencePair({
+      ...options,
+      followupActionIndex
+    });
+    if (score > best) {
+      best = score;
+    }
+  }
+  return best;
+}
+
+function scoreTacticalActionSequencePair(
+  options: Omit<ScoreOptions, 'rolloutFrames'> & { followupActionIndex: number }
+): number {
+  const initial = options.state as GameState;
+  const simulated = cloneState(initial);
+  const controlled = controlledTank(simulated, options.team);
+  if (!controlled) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const before = evaluatePosition(simulated, options.team).total;
+  const firstCommands: CommandMap = {
+    [controlled.id]: actionIndexToCommand(options.actionIndex)
+  };
+  const followupCommands: CommandMap = {
+    [controlled.id]: actionIndexToCommand(options.followupActionIndex)
+  };
+  const opponentTeam = options.team === 'red' ? 'blue' : 'red';
+  const opponent = controlledTank(simulated, opponentTeam);
+  if (opponent && options.opponentActionIndex !== undefined) {
+    const opponentCommand = actionIndexToCommand(options.opponentActionIndex);
+    firstCommands[opponent.id] = opponentCommand;
+    followupCommands[opponent.id] = opponentCommand;
+  }
+
+  for (let frame = 0; frame < ATTACK_STALL_SEQUENCE_FIRST_FRAMES; frame += 1) {
+    stepGame(simulated, firstCommands, FIXED_DT);
+  }
+  for (let frame = 0; frame < ATTACK_STALL_SEQUENCE_SECOND_FRAMES; frame += 1) {
+    stepGame(simulated, followupCommands, FIXED_DT);
+  }
+
+  const after = evaluatePosition(simulated, options.team).total;
+  const delta = evaluatePositionDelta(simulated, initial, options.team);
+  const firstAction = actionIndexToCommand(options.actionIndex);
+  const followupAction = actionIndexToCommand(options.followupActionIndex);
+  const trackCost =
+    (Math.abs(firstAction.leftTrack) + Math.abs(firstAction.rightTrack)) * 0.55 +
+    (Math.abs(followupAction.leftTrack) + Math.abs(followupAction.rightTrack)) * 0.45;
+  return after - before +
+    delta.breakdown.cornerEscape * 0.45 +
+    -trackCost * 0.004;
+}
+
 function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): boolean {
   const ball = state.ball;
   const ballSpeed = Math.hypot(ball.velocity.x, ball.velocity.y);
@@ -120,6 +191,35 @@ function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): bo
 
   return attackX(team, ball.position.x) > FIELD.length - FIELD.ballRadius - 115 &&
     sideWallDistance(ball.position.y) < FIELD.ballRadius + 58;
+}
+
+function shouldUseAttackStallSequence(state: Readonly<GameState>, team: Team): boolean {
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (ballSpeed > 18) {
+    return false;
+  }
+
+  const tank = controlledTank(state as GameState, team);
+  if (!tank) {
+    return false;
+  }
+  if (staminaRatio(tank) < 0.5) {
+    return false;
+  }
+
+  const ballDistance = Math.hypot(
+    tank.position.x - state.ball.position.x,
+    tank.position.y - state.ball.position.y
+  );
+  if (ballDistance > FIELD.tankRadius * 3.1) {
+    return false;
+  }
+
+  const ballAttackX = attackX(team, state.ball.position.x);
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  const sideWallPinned = sideWallDistance(state.ball.position.y) < FIELD.ballRadius + 16;
+  return (ballAttackX > FIELD.length - 245 && lane > 0.45) ||
+    (ballAttackX > FIELD.length - 210 && sideWallPinned);
 }
 
 function controlledTank(state: GameState, team: Team): Tank | undefined {
@@ -139,4 +239,12 @@ function attackX(team: Team, x: number): number {
 
 function sideWallDistance(y: number): number {
   return Math.min(y - FIELD.ballRadius, FIELD.width - FIELD.ballRadius - y);
+}
+
+function staminaRatio(tank: Tank): number {
+  return tank.maxStamina > 0 ? clamp01(tank.stamina / tank.maxStamina) : 0;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }

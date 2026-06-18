@@ -50,17 +50,20 @@ Pure PPO/neural training is now diagnostic only. It can still be used to generat
 
 1. Attacking-corner tactical rollout is no longer skipped when the opponent is close to the ball.
 2. Slow pinned attacking-corner balls now use a longer tactical rollout horizon.
+3. Slow high-pressure attacking stalls can use a two-step tactical rollout sequence.
 
 Previous behavior: `shouldUseTacticalRollout` skipped rollout in attacking corners if an opponent was near the ball. In traced fragile seeds, this let the neural policy keep low-value single-track corner actions and left the ball pinned near the end wall or side wall. The lesson was converted into code by letting attacking-corner states use tactical rollout even under opponent pressure, and into tests by asserting that opponent-close attacking corners still run rollout and can override a bad raw action.
 
 The second loop found another corner-specific failure in standard seed `31`: after the first fix, match `2` pushed the ball into a slow, pinned attacking corner, but the 18-frame rollout still preferred short-term safe actions. A targeted diagnostic showed that longer horizons can see the corner release payoff, so `tacticalRollout` now uses a 120-frame horizon only for slow pinned attacking-corner states. This is guarded by a regression test that verifies the default horizon finds a much better release than the short window.
 
+The third loop found that some near-goal and side-wall stalls are not fixed by forcing a single forward action. Fixed-action probes from states such as `57:1`, `31:0/1`, and `19:3` often failed to score even over long horizons. The accepted lesson is narrower: when the ball is slow, attacking pressure is high, stamina is healthy, and the tank is close enough to influence the ball, tactical rollout scores a two-step sequence (first action, then best follow-up action) instead of a single repeated action. Low-stamina states stay on the old single-action rollout so critical stamina finish tests remain protected.
+
 Gate comparison using the same accepted weights:
 
 | Gate | Before | After |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `12-1`, `avgScore=347.123`, `avgWin=0.725`, `avgBp=0.269` |
-| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289` | goals `17-0`, `avgScore=514.586`, `avgWin=0.875`, `avgBp=0.203` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `13-1`, `avgScore=375.578`, `avgWin=0.750`, `avgBp=0.273` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289` | goals `19-0`, `avgScore=565.393`, `avgWin=0.875`, `avgBp=0.163` |
 
 Per-seed gains from this HL change:
 
@@ -71,6 +74,9 @@ Per-seed gains from this HL change:
 - Holdout seed `83` improved from `3-0`, score `460.512` to `4-0`, score `591.803`.
 - Holdout seed `97` improved from `1-0`, score `173.726` to `2-0`, score `306.385`.
 - Standard seed `71` improved from `2-0`, score `318.535` to `3-0`, score `453.296`.
+- Standard seed `19` improved from the post-corner `2-0`, score `329.908`, win `0.750` to `3-0`, score `473.083`, win `0.875`.
+- Holdout seed `109` improved from the post-corner `2-0`, score `328.737` to `3-0`, score `455.772`.
+- Holdout seed `127` improved from the post-corner `5-0`, score `749.371` to `6-0`, score `876.373`.
 - Standard seed `31` remains below the session-start baseline (`2-0`, score `324.809` to `1-0`, score `195.901`); this is still the next standard-gate diagnosis target.
 
 Rejected follow-up ideas from the same session:
@@ -83,10 +89,10 @@ Rejected follow-up ideas from the same session:
 Diagnostic tooling added after the corner fixes:
 
 - `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
-- Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches.
+- Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `13-1`, wins `11`, draws `8`, losses `1`.
 - Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
-Decision: keep the two corner-focused changes if full tests/build pass, because standard score improves and holdout goals/win proxy improve substantially. The objective is not fully complete yet because standard win proxy remains `0.725`; continue with seed `31` and the remaining standard draw/loss cases.
+Decision: keep the three HL runtime changes if full tests/build pass. Standard win proxy improves from `0.725` at session start to `0.750` (+3.4%), while holdout win proxy improves from `0.750` to `0.875` (+16.7%) and holdout goals rise from `11-0` to `19-0`. The objective is closer but not fully complete by the example 10% standard win-rate threshold; continue with seed `31` and the remaining standard draw/loss cases.
 
 ## Architecture
 
@@ -241,7 +247,7 @@ The practical lesson is not that neural networks are useless. The lesson is that
 ## Next Work Plan
 
 1. Use `scripts/diagnose-runtime-failures.ts` to compare the remaining standard draw/loss cases after each candidate change, especially `31:0/1/2`, `57:1`, and `19:3`.
-2. Study why tactical rollout scores stop above active contact in high-pressure near-goal stalls. Candidate mechanisms should be tested as scoring changes or contact-state regressions, not broad force-forward rules.
+2. Study why seed `31` still loses one expected standard goal after the two-step rollout. Candidate mechanisms should inspect the exact match `0/1/2` trajectories and avoid broad near-goal force rules.
 3. For attacking side-wall/corner stalls, inspect whether the rollout simulation needs opponent action assumptions or a contact-progress term before increasing horizons further.
 4. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
 5. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.

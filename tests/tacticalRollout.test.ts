@@ -56,6 +56,50 @@ describe('tactical rollout action selector', () => {
     expect(defaultChoice.actionIndex).not.toBe(4);
     expect(defaultChoice.score).toBeGreaterThan(shortChoice.score + 0.5);
   });
+
+  it('uses a two-step sequence to recover a slow attacking stall', () => {
+    const state = createSlowAttackStallState();
+
+    const shortChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8,
+      rolloutFrames: 18
+    });
+    const defaultChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8
+    });
+
+    expect(shortChoice.actionIndex).toBe(4);
+    expect(defaultChoice.actionIndex).not.toBe(4);
+    expect(defaultChoice.score).toBeGreaterThan(shortChoice.score + 0.15);
+  });
+
+  it('does not use the two-step attacking stall sequence at low stamina', () => {
+    const state = createSlowAttackStallState();
+    const blue = state.tanks.find((tank) => tank.team === 'blue');
+    if (!blue) {
+      throw new Error('missing blue tank');
+    }
+    blue.stamina = blue.maxStamina * 0.2;
+
+    const shortChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8,
+      rolloutFrames: 18
+    });
+    const defaultChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8
+    });
+
+    expect(defaultChoice.actionIndex).toBe(shortChoice.actionIndex);
+    expect(defaultChoice.score).toBeCloseTo(shortChoice.score, 9);
+  });
 });
 
 function createDirectFinishState(): GameState {
@@ -110,6 +154,31 @@ function createPinnedAttackCornerState(): GameState {
   blue.velocity = { x: 0, y: 0 };
   blue.angle = Math.PI / 2;
   blue.angularVelocity = 0;
+
+  return state;
+}
+
+function createSlowAttackStallState(): GameState {
+  const state = createInitialState();
+  state.ball.position = { x: 108, y: 322 };
+  state.ball.velocity = { x: -0.2, y: -0.1 };
+
+  const red = state.tanks.find((tank) => tank.team === 'red');
+  const blue = state.tanks.find((tank) => tank.team === 'blue');
+  if (!red || !blue) {
+    throw new Error('missing tanks');
+  }
+
+  blue.position = { x: 215, y: 288 };
+  blue.velocity = { x: 0, y: 0 };
+  blue.angle = 2.72;
+  blue.angularVelocity = 0;
+  blue.stamina = blue.maxStamina;
+
+  red.position = { x: 68, y: 412 };
+  red.velocity = { x: 0, y: 0 };
+  red.angle = -1.15;
+  red.angularVelocity = 0;
 
   return state;
 }
