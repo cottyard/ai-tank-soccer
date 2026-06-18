@@ -77,6 +77,14 @@ Rejected follow-up ideas from the same session:
 
 - A broad near-goal finish-stall scoring bonus/stop penalty passed local tests but regressed the gate to standard goals `11-2`, `avgScore=287.503`, `avgWin=0.700`; do not reintroduce it without a narrower hypothesis.
 - A sandboxed force-forward rule for low-speed near-goal balls produced only tiny score deltas and no standard win-proxy gain; it is not worth committing.
+- A guarded "keep active policy action" rule for slow high-pressure finishes avoided one local stall but did not improve the gate: standard stayed goals `12-1`, `avgWin=0.725` and score slipped slightly to `346.993`; reverted.
+- A medium-horizon rollout for slow attacking side-wall balls helped a local `19:3` trace frame but produced no aggregate gate change; reverted until a scoring or contact model explains why the longer action does not convert.
+
+Diagnostic tooling added after the corner fixes:
+
+- `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
+- Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches.
+- Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
 Decision: keep the two corner-focused changes if full tests/build pass, because standard score improves and holdout goals/win proxy improve substantially. The objective is not fully complete yet because standard win proxy remains `0.725`; continue with seed `31` and the remaining standard draw/loss cases.
 
@@ -183,6 +191,17 @@ npx tsx scripts/trace-runtime-policy.ts `
   --output training-runs/runtime-trace-hl-diagnostic.json
 ```
 
+Match-level HL failure diagnostics:
+
+```powershell
+npx tsx scripts/diagnose-runtime-failures.ts `
+  --seeds 19 31 43 57 71 `
+  --matches 4 `
+  --frames 600 `
+  --tail-decisions 30 `
+  --output training-runs/hl-standard-failures.json
+```
+
 Native PPO tooling remains available for diagnostics:
 
 ```powershell
@@ -221,9 +240,9 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Inspect the remaining standard seed `31` regression and standard draw/loss cases (`19` match `1`, `31` matches `0/1/2`, `57` match `1`, `71` match `3`) with a reusable diagnostic summary before adding more runtime rules.
-2. Add a reusable HL diagnostic script or JSON summary format that records hypothesis, seeds, per-match goals, final ball/tank states, action histograms, and first divergences for one failure pattern.
-3. Study near-goal low-speed stalls separately from corner stalls. The broad scoring and force-forward probes did not improve gates, so the next attempt should compare full match trajectories and opponent interference before changing scoring.
+1. Use `scripts/diagnose-runtime-failures.ts` to compare the remaining standard draw/loss cases after each candidate change, especially `31:0/1/2`, `57:1`, and `19:3`.
+2. Study why tactical rollout scores stop above active contact in high-pressure near-goal stalls. Candidate mechanisms should be tested as scoring changes or contact-state regressions, not broad force-forward rules.
+3. For attacking side-wall/corner stalls, inspect whether the rollout simulation needs opponent action assumptions or a contact-progress term before increasing horizons further.
 4. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
 5. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
 
