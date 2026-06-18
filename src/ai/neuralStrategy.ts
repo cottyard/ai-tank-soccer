@@ -235,11 +235,68 @@ function shouldConserveStamina(
   tank: Tank,
   pressures: PressureSignals
 ): boolean {
+  if (shouldWaitForSafeOwnCornerRelease(state, team, tank, pressures)) {
+    return true;
+  }
+
+  if (shouldWaitForDriftingFinish(state, team, tank, pressures)) {
+    return true;
+  }
+
   if (staminaRatio(tank) >= STAMINA_CONSERVE_RATIO) {
     return false;
   }
 
   return !urgentStaminaSpend(state, team, tank, pressures);
+}
+
+function shouldWaitForSafeOwnCornerRelease(
+  state: Readonly<GameState>,
+  team: Team,
+  tank: Tank,
+  pressures: PressureSignals
+): boolean {
+  if (pressures.ownCorner < 0.56 || pressures.ownGoal > 0.34 || pressures.attackCorner > 0.1) {
+    return false;
+  }
+
+  const sign = teamSign(team);
+  const attackVelocity = state.ball.velocity.x * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (attackVelocity < 12 || ballSpeed > 90) {
+    return false;
+  }
+
+  const ballDistance = ballDistanceToTank(state, tank);
+  return ballDistance > tank.radius + state.ball.radius - 8 &&
+    ballDistance < FIELD.tankRadius * 1.55;
+}
+
+function shouldWaitForDriftingFinish(
+  state: Readonly<GameState>,
+  team: Team,
+  tank: Tank,
+  pressures: PressureSignals
+): boolean {
+  if (staminaRatio(tank) > 0.24 || pressures.finishing < 0.9 || pressures.ownGoal > 0.24) {
+    return false;
+  }
+
+  const sign = teamSign(team);
+  const attackBallX = (state.ball.position.x - FIELD.length / 2) * sign + FIELD.length / 2;
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  if (attackBallX < FIELD.length - 190 || lane < 0.58) {
+    return false;
+  }
+
+  const attackVelocity = state.ball.velocity.x * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (attackVelocity < -10 || ballSpeed > 70) {
+    return false;
+  }
+
+  const ballDistance = ballDistanceToTank(state, tank);
+  return ballDistance <= tank.radius + state.ball.radius + DECISIVE_CONTACT_BUFFER;
 }
 
 function urgentStaminaSpend(
@@ -256,11 +313,34 @@ function urgentStaminaSpend(
     return false;
   }
 
+  if (shouldRecoverLowPressureContactStamina(state, team, tank, pressures)) {
+    return false;
+  }
+
   if (isLooseBallContest(state, team, tank)) {
     return true;
   }
 
   return decisiveBallContact(state, team, tank, pressures);
+}
+
+function shouldRecoverLowPressureContactStamina(
+  state: Readonly<GameState>,
+  _team: Team,
+  tank: Tank,
+  pressures: PressureSignals
+): boolean {
+  if (staminaRatio(tank) >= 0.34 || pressures.finishing > 0.45 || pressures.ownGoal > 0.35) {
+    return false;
+  }
+
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (ballSpeed > 90) {
+    return false;
+  }
+
+  const contactDistance = tank.radius + state.ball.radius + DECISIVE_CONTACT_BUFFER;
+  return ballDistanceToTank(state, tank) <= contactDistance;
 }
 
 function shouldRecoverCriticalStamina(
@@ -343,6 +423,10 @@ function regulateCriticalStaminaCommand(
     return command;
   }
 
+  if (shouldPreserveCriticalRollingFinishPush(state, team, tank, pressures, command)) {
+    return command;
+  }
+
   const local = targetInTankFrame(tank, team, state.ball.position);
   if (Math.abs(local.lateral) < FIELD.tankRadius * 0.18) {
     return command.leftTrack === command.rightTrack
@@ -354,6 +438,52 @@ function regulateCriticalStaminaCommand(
   return turnTowardBall > 0
     ? { leftTrack: command.leftTrack, rightTrack: 0 }
     : { leftTrack: 0, rightTrack: command.rightTrack };
+}
+
+function shouldPreserveCriticalRollingFinishPush(
+  state: Readonly<GameState>,
+  team: Team,
+  tank: Tank,
+  pressures: PressureSignals,
+  command: TankCommand
+): boolean {
+  if (command.leftTrack !== 1 || command.rightTrack !== 1) {
+    return false;
+  }
+
+  if (pressures.finishing < 0.78 || pressures.finishing > 0.86 || pressures.ownGoal > 0.32) {
+    return false;
+  }
+
+  const sign = teamSign(team);
+  const attackBallX = (state.ball.position.x - FIELD.length / 2) * sign + FIELD.length / 2;
+  const attackBallY = (state.ball.position.y - FIELD.width / 2) * sign;
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  if (
+    attackBallX < FIELD.length - 275 ||
+    attackBallX > FIELD.length - 240 ||
+    attackBallY < 0 ||
+    lane < 0.94
+  ) {
+    return false;
+  }
+
+  const attackVelocity = state.ball.velocity.x * sign;
+  const attackLateralVelocity = state.ball.velocity.y * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (
+    attackVelocity < 8 ||
+    attackVelocity > 80 ||
+    Math.abs(attackLateralVelocity) > 8 ||
+    ballSpeed > 85
+  ) {
+    return false;
+  }
+
+  const local = targetInTankFrame(tank, team, state.ball.position);
+  return local.forward > FIELD.ballRadius &&
+    Math.abs(local.lateral) < FIELD.tankRadius * 0.42 &&
+    local.distance <= FIELD.tankRadius;
 }
 
 function isLooseBallContest(state: Readonly<GameState>, team: Team, tank: Tank): boolean {

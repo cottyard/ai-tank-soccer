@@ -44,6 +44,16 @@ Mainline research should use this loop:
 
 Pure PPO/neural training is now diagnostic only. It can still be used to generate hypotheses, candidate behaviors, or state anchors, but a training run is not considered progress unless it creates a behavior that survives the runtime wrapper and full gates.
 
+## Bottleneck And Infrastructure Audits
+
+Periodically audit whether the project is blocked by its current technical approach rather than by a missing local heuristic. This includes the browser/runtime split, TypeScript simulation speed, tactical rollout model, trace format, evaluation gates, training tools, test strategy, build system, native helpers, and any other infrastructure that affects learning velocity or AI quality.
+
+The stack is not fixed. If a bottleneck is blocking measurable AI improvement, it is valid to change the architecture, rewrite core infrastructure, move more logic into native code, replace or extend the rollout/search system, add new analysis pipelines, change data formats, or otherwise migrate the technical foundation. Treat these changes as first-class project work when they are tied to a concrete bottleneck hypothesis, preserve or intentionally migrate deterministic browser-runtime behavior, include verification gates or migration tests, and are recorded in this file.
+
+When progress stalls, also audit whether the neural policy, traditional strategy, runtime heuristics, tactical rollout, or any hybrid boundary is being used in the right place. Check for areas where a trained neural model could outperform hand-coded behavior, where traditional logic is still a better safety guard, and where the current split prevents learning from being tried. Training a focused neural component, replacing a traditional subsystem, or changing which policy controls a state class is valid project work when it is tied to a bottleneck hypothesis and verified through the same deterministic gates.
+
+Do not keep a tool, language boundary, runtime architecture, or workflow merely because it is already in the repository. The standard is whether it helps produce a stronger playable AI safely and repeatably.
+
 ## Current HL Result
 
 2026-06-18 HL iterations:
@@ -100,10 +110,56 @@ Rejected follow-up ideas from the same session:
 Diagnostic tooling added after the corner fixes:
 
 - `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
+- `scripts/probe-runtime-macros.ts` runs fixed-action counterfactuals against the browser-runtime policy. It now caches aligned start states and forks from those frames, which keeps broad macro sweeps practical without changing AI-decision-frame semantics.
 - Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `14-1`, wins `12`, draws `7`, losses `1`; the fast own-goal defensive horizon improves it again to goals `14-0`, wins `13`, draws `7`, losses `0`.
 - Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
 Decision: keep the five HL runtime changes if full tests/build pass. Standard win proxy improves from `0.725` at session start to `0.800` (+10.3%), while holdout win proxy improves from `0.750` to `0.875` (+16.7%) and holdout goals rise from `11-0` to `19-0`. The rough +10% standard objective is now met; continue with seed `31` as the main remaining under-baseline standard case.
+
+2026-06-19 continuation from the accepted `avgWin=0.800` HL baseline:
+
+The next target was another relative +10% from the current accepted baseline. Because the standard gate has 20 matches and win proxy moves in `0.025` increments, the practical target was `avgWin >= 0.900`.
+
+Accepted additions:
+
+1. Low-pressure contact now recovers stamina instead of spending weak contact energy when stamina is below `0.34`, finishing pressure is low, own-goal pressure is low, ball speed is modest, and the tank is already in contact range.
+2. Safe own-corner releases can wait when the ball is rolling away from the own goal and there is no urgent goal threat.
+3. Low-stamina drifting finish chances can wait when the ball is already in a high-quality finish lane and a rushed touch is more likely to spoil the setup.
+4. Critical-stamina rolling finish pushes can preserve full forward drive only for a narrow pattern: high but not maximal finish pressure, no major own-goal risk, the ball in the goal lane, low lateral drift, controlled forward attack velocity, and the raw/tactical policy already choosing full forward. This converted standard `19:1` while avoiding the nearby `31:0/1` regressions that appeared under broader variants.
+
+Rejected during this continuation:
+
+- Broad opponent predicted-action assumptions inside rollout regressed standard performance.
+- Wider low-pressure recovery thresholds (`0.38`/`0.42`) lost the accepted gains.
+- Lane-progress position scoring, exhausted-finish stamina recovery, longer low-stamina finish rollout horizons, broad critical-stamina finish push preservation, and widened drifting-wait thresholds either produced no gate win or traded one converted draw for another regression.
+- A broader rolling-finish push converted `19:1` but regressed seed `31`; adding the low-lateral-drift condition was required for the final accepted version.
+
+Updated gate comparison from the previous accepted `0.800` baseline:
+
+| Gate | Previous Accepted | Current |
+| --- | ---: | ---: |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `14-0`, `avgScore=433.364`, `avgWin=0.800`, `avgBp=0.242` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=565.393`, `avgWin=0.875`, `avgBp=0.163` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` |
+
+Per-seed current standard gate:
+
+- `19`: `4-0`, score `608.975`, win `1.000`, ball progress `0.300`.
+- `31`: `3-0`, score `466.834`, win `0.875`, ball progress `0.281`.
+- `43`: `3-0`, score `471.716`, win `0.875`, ball progress `0.342`.
+- `57`: `4-0`, score `583.354`, win `1.000`, ball progress `-0.021`.
+- `71`: `3-0`, score `457.165`, win `0.750`, ball progress `0.230`.
+
+Per-seed current holdout gate:
+
+- `83`: `4-0`, score `596.182`, win `1.000`, ball progress `0.140`.
+- `97`: `2-0`, score `309.350`, win `0.750`, ball progress `0.070`.
+- `109`: `3-0`, score `458.186`, win `0.750`, ball progress `0.243`.
+- `127`: `6-0`, score `878.000`, win `1.000`, ball progress `0.287`.
+- `149`: `4-0`, score `597.036`, win `0.875`, ball progress `0.221`.
+
+Current remaining standard draws after the accepted continuation are `31:0`, `43:1`, `71:0`, and `71:3`. The practical next target is to convert one of these without losing the `31` safety recovered by the low-lateral-drift guard.
+
+Decision: keep the continuation if full tests/build pass. The standard gate improved from `avgWin=0.800` to `avgWin=0.900`, which is a relative +12.5% improvement from the accepted baseline and satisfies the requested additional +10% objective while holdout remains safe.
 
 ## Architecture
 
@@ -257,12 +313,13 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Use `scripts/diagnose-runtime-failures.ts` to compare the remaining standard draw/loss cases after each candidate change, especially `31:0/1/2`, `57:1`, and `19:3`.
-2. Study why seed `31` still loses one expected standard goal after the two-step rollout. Candidate mechanisms should inspect the exact match `0/1/2` trajectories and avoid broad near-goal force rules.
-3. Study standard seed `57:1` as a separate central finish stall. The failed near-miss probe does not address it; inspect whether repeated stop decisions near the goal mouth need a narrow contact-progress sequence rather than a global scoring bonus.
-4. For attacking side-wall/corner stalls, inspect whether the rollout simulation needs opponent action assumptions or a contact-progress term before increasing horizons further.
-5. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
-6. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
+1. Use `scripts/diagnose-runtime-failures.ts` and cached `scripts/probe-runtime-macros.ts` sweeps to study the remaining standard draws: `31:0`, `43:1`, `71:0`, and `71:3`.
+2. Prioritize `31:0` and `43:1` as high-finish-pressure draws. Avoid broad critical-stamina or near-goal force rules; previous broader variants converted one draw while regressing another.
+3. Treat `71:0` as a separate midfield/low-finish problem rather than a finish-stall problem.
+4. For `71:3`, inspect whether the failure is side-wall geometry, critical-stamina regulation, or rollout scoring before changing thresholds.
+5. When progress stalls, explicitly audit whether the neural policy, traditional strategy, heuristic wrapper, or tactical rollout owns the right state classes. A focused neural component or policy-boundary change is acceptable if it targets a concrete failure and survives standard/holdout gates.
+6. If further improvements stall on search speed, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking has reduced one immediate counterfactual bottleneck.
+7. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
 
 ## Repository Hygiene
 

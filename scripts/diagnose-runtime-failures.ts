@@ -53,6 +53,8 @@ export type RuntimeMatchDiagnostic = {
   opponentTank: TankSnapshot;
   allDecisions: DecisionWindowSummary;
   tailDecisions: DecisionWindowSummary;
+  earlyDecisions: DecisionWindowSummary;
+  opportunity: OpportunitySummary;
   tailActions: TailActionSnapshot[];
 };
 
@@ -85,6 +87,16 @@ type DecisionWindowSummary = {
   averageSideWallPressure: number;
   averageAttackCornerPressure: number;
   averageOwnCornerPressure: number;
+};
+
+type OpportunitySummary = {
+  firstHighFinishFrame?: number;
+  peakFinishingPressure: number;
+  peakFinishFrame?: number;
+  closeFinishDecisions: number;
+  lowStaminaFinishDecisions: number;
+  criticalRegulatedFinishDecisions: number;
+  staminaConservedFinishDecisions: number;
 };
 
 type TailActionSnapshot = {
@@ -221,6 +233,7 @@ function matchDiagnostic(options: {
   tailDecisions: number;
 }): RuntimeMatchDiagnostic {
   const tail = options.traces.slice(-options.tailDecisions);
+  const early = options.traces.filter((trace) => trace.frame < Math.min(240, options.result.frame));
   const controlled = tankSnapshot(options.result, options.team);
   const opponent = tankSnapshot(options.result, options.team === 'red' ? 'blue' : 'red');
   const finalBallSpeed = Math.hypot(options.result.ball.velocity.x, options.result.ball.velocity.y);
@@ -246,6 +259,8 @@ function matchDiagnostic(options: {
     opponentTank: opponent,
     allDecisions: summarizeDecisions(options.traces),
     tailDecisions: summarizeDecisions(tail),
+    earlyDecisions: summarizeDecisions(early),
+    opportunity: summarizeOpportunity(options.traces),
     tailActions: tail.map((trace) => ({
       frame: trace.frame,
       rawActionIndex: trace.rawPolicyActionIndex,
@@ -262,6 +277,55 @@ function matchDiagnostic(options: {
       attackCornerPressure: round(trace.attackCornerPressure),
       ownCornerPressure: round(trace.ownCornerPressure)
     }))
+  };
+}
+
+function summarizeOpportunity(records: readonly NeuralDecisionTrace[]): OpportunitySummary {
+  let firstHighFinishFrame: number | undefined;
+  let peakFinishFrame: number | undefined;
+  let peakFinishingPressure = Number.NEGATIVE_INFINITY;
+  let closeFinishDecisions = 0;
+  let lowStaminaFinishDecisions = 0;
+  let criticalRegulatedFinishDecisions = 0;
+  let staminaConservedFinishDecisions = 0;
+
+  for (const trace of records) {
+    if (trace.finishingPressure > peakFinishingPressure) {
+      peakFinishingPressure = trace.finishingPressure;
+      peakFinishFrame = trace.frame;
+    }
+
+    const highFinish = trace.finishingPressure >= 0.78;
+    if (!highFinish) {
+      continue;
+    }
+
+    if (firstHighFinishFrame === undefined) {
+      firstHighFinishFrame = trace.frame;
+    }
+
+    if (trace.ballDistance <= FIELD.tankRadius + FIELD.ballRadius + 28) {
+      closeFinishDecisions += 1;
+    }
+    if (trace.staminaRatio < 0.25) {
+      lowStaminaFinishDecisions += 1;
+    }
+    if (trace.criticalStaminaRegulated) {
+      criticalRegulatedFinishDecisions += 1;
+    }
+    if (trace.staminaConserved) {
+      staminaConservedFinishDecisions += 1;
+    }
+  }
+
+  return {
+    firstHighFinishFrame,
+    peakFinishingPressure: round(Math.max(0, peakFinishingPressure)),
+    peakFinishFrame,
+    closeFinishDecisions,
+    lowStaminaFinishDecisions,
+    criticalRegulatedFinishDecisions,
+    staminaConservedFinishDecisions
   };
 }
 
@@ -329,6 +393,7 @@ function formatSummary(result: RuntimeFailureDiagnosticResult): string {
 
 function formatMatch(row: RuntimeMatchDiagnostic): string {
   const tail = row.tailDecisions;
+  const early = row.earlyDecisions;
   return [
     `seed=${row.seed}`,
     `match=${row.match}`,
@@ -339,6 +404,12 @@ function formatMatch(row: RuntimeMatchDiagnostic): string {
     `attackX=${row.attackBallX}`,
     `side=${row.sideWallDistance}`,
     `speed=${row.finalBallSpeed}`,
+    `firstFinish=${row.opportunity.firstHighFinishFrame ?? '-'}`,
+    `peakFinish=${row.opportunity.peakFinishingPressure}@${row.opportunity.peakFinishFrame ?? '-'}`,
+    `closeFinish=${row.opportunity.closeFinishDecisions}`,
+    `lowStamFinish=${row.opportunity.lowStaminaFinishDecisions}`,
+    `earlyStam=${early.averageStamina}`,
+    `earlyFinal=${early.finalActionCounts.join(',')}`,
     `tailPressure=finish:${tail.averageFinishingPressure},own:${tail.averageOwnGoalPressure},attackCorner:${tail.averageAttackCornerPressure},ownCorner:${tail.averageOwnCornerPressure}`,
     `tailFinal=${tail.finalActionCounts.join(',')}`,
     `tailRolloutChanges=${tail.tacticalRolloutChanges}`,

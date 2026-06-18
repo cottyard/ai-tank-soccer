@@ -275,6 +275,60 @@ describe('neural tank soccer strategy', () => {
     });
   });
 
+  it('rests during low-pressure contact when stamina is too low for useful pushing', () => {
+    const state = createInitialState();
+    const red = tank(state, 'red');
+    const blue = tank(state, 'blue');
+    state.ball.position = { x: FIELD.length * 0.52, y: FIELD.width / 2 };
+    state.ball.velocity = { x: 12, y: 0 };
+    red.position = {
+      x: state.ball.position.x - FIELD.ballRadius - FIELD.tankRadius - 4,
+      y: state.ball.position.y
+    };
+    red.angle = 0;
+    red.stamina = red.maxStamina * 0.3;
+    blue.position = { x: FIELD.length * 0.74, y: FIELD.width / 2 + 130 };
+
+    expect(createNeuralStrategy().decide(state, 'red')['red-0']).toEqual({
+      leftTrack: 0,
+      rightTrack: 0
+    });
+  });
+
+  it('waits for a safe own-corner release instead of chasing the rolling wall ball', () => {
+    const state = createInitialState();
+    const red = tank(state, 'red');
+    const blue = tank(state, 'blue');
+    state.ball.position = { x: 182, y: FIELD.width - FIELD.ballRadius };
+    state.ball.velocity = { x: 26, y: 0 };
+    red.position = { x: 78, y: FIELD.width - 140 };
+    red.angle = 1.13;
+    red.stamina = red.maxStamina * 0.6;
+    blue.position = { x: 480, y: FIELD.width - 180 };
+
+    expect(createNeuralStrategy().decide(state, 'red')['red-0']).toEqual({
+      leftTrack: 0,
+      rightTrack: 0
+    });
+  });
+
+  it('does not wait in an own corner when the ball is still threatening goal', () => {
+    const state = createInitialState();
+    const red = tank(state, 'red');
+    const blue = tank(state, 'blue');
+    state.ball.position = { x: 150, y: FIELD.width / 2 + 30 };
+    state.ball.velocity = { x: -90, y: 0 };
+    red.position = { x: 90, y: FIELD.width / 2 + 116 };
+    red.angle = 1.2;
+    red.stamina = red.maxStamina * 0.6;
+    blue.position = { x: 350, y: FIELD.width / 2 };
+
+    expect(createNeuralStrategy().decide(state, 'red')['red-0']).not.toEqual({
+      leftTrack: 0,
+      rightTrack: 0
+    });
+  });
+
   it('can still spend critical stamina for a clinching shot at the goal mouth', () => {
     const state = createDirectFinishState();
     const red = tank(state, 'red');
@@ -294,6 +348,19 @@ describe('neural tank soccer strategy', () => {
     const command = createNeuralStrategy().decide(state, 'red')['red-0'];
 
     expect(Math.abs(command.leftTrack) + Math.abs(command.rightTrack)).toBeLessThanOrEqual(1);
+  });
+
+  it('preserves a critical-stamina rolling finish push when the ball is already lined up', () => {
+    const state = createRollingFinishPushState();
+    const red = tank(state, 'red');
+    red.stamina = red.maxStamina * 0.2;
+
+    expect(createNeuralStrategy({
+      weights: preferredActionWeights(8)
+    }).decide(state, 'red')['red-0']).toEqual({
+      leftTrack: 1,
+      rightTrack: 1
+    });
   });
 
   it('turns its nose toward a loose ball after losing possession', () => {
@@ -513,6 +580,30 @@ function createDirectFinishState(): GameState {
 
   const blue = tank(state, 'blue');
   blue.position = { x: FIELD.length - 130, y: FIELD.width / 2 + 210 };
+  blue.velocity = { x: 0, y: 0 };
+  blue.angle = Math.PI;
+  blue.angularVelocity = 0;
+
+  return state;
+}
+
+function createRollingFinishPushState(): GameState {
+  const state = createInitialState();
+  state.ball.position = { x: FIELD.length - 266, y: FIELD.width / 2 + 1 };
+  state.ball.velocity = { x: 48, y: 2 };
+
+  const red = tank(state, 'red');
+  red.position = {
+    x: state.ball.position.x - 104,
+    y: state.ball.position.y + 12
+  };
+  red.velocity = { x: 0, y: 0 };
+  red.angle = 0;
+  red.angularVelocity = 0;
+  red.stamina = red.maxStamina;
+
+  const blue = tank(state, 'blue');
+  blue.position = { x: FIELD.length - 145, y: FIELD.width / 2 + 6 };
   blue.velocity = { x: 0, y: 0 };
   blue.angle = Math.PI;
   blue.angularVelocity = 0;

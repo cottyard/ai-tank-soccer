@@ -68,7 +68,10 @@ describe('runtime failure diagnostics', () => {
     });
     expect(result.matches[0].tailActions.length).toBeLessThanOrEqual(3);
     expect(result.matches[0].allDecisions.finalActionCounts).toHaveLength(9);
+    expect(result.matches[0].earlyDecisions.finalActionCounts).toHaveLength(9);
     expect(Number.isFinite(result.matches[0].ballProgress)).toBe(true);
+    expect(Number.isFinite(result.matches[0].opportunity.peakFinishingPressure)).toBe(true);
+    expect(result.matches[0].opportunity.closeFinishDecisions).toBeGreaterThanOrEqual(0);
   });
 
   it('writes JSON diagnostics for later heuristic-learning inspection', () => {
