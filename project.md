@@ -46,26 +46,39 @@ Pure PPO/neural training is now diagnostic only. It can still be used to generat
 
 ## Current HL Result
 
-2026-06-18 HL iteration: attacking-corner tactical rollout is no longer skipped when the opponent is close to the ball.
+2026-06-18 HL iterations:
+
+1. Attacking-corner tactical rollout is no longer skipped when the opponent is close to the ball.
+2. Slow pinned attacking-corner balls now use a longer tactical rollout horizon.
 
 Previous behavior: `shouldUseTacticalRollout` skipped rollout in attacking corners if an opponent was near the ball. In traced fragile seeds, this let the neural policy keep low-value single-track corner actions and left the ball pinned near the end wall or side wall. The lesson was converted into code by letting attacking-corner states use tactical rollout even under opponent pressure, and into tests by asserting that opponent-close attacking corners still run rollout and can override a bad raw action.
+
+The second loop found another corner-specific failure in standard seed `31`: after the first fix, match `2` pushed the ball into a slow, pinned attacking corner, but the 18-frame rollout still preferred short-term safe actions. A targeted diagnostic showed that longer horizons can see the corner release payoff, so `tacticalRollout` now uses a 120-frame horizon only for slow pinned attacking-corner states. This is guarded by a regression test that verifies the default horizon finds a much better release than the short window.
 
 Gate comparison using the same accepted weights:
 
 | Gate | Before | After |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `12-1`, `avgScore=346.449`, `avgWin=0.725`, `avgBp=0.260` |
-| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289` | goals `14-0`, `avgScore=436.084`, `avgWin=0.825`, `avgBp=0.262` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `11-1`, `avgScore=320.213`, `avgWin=0.725`, `avgBp=0.270` | goals `12-1`, `avgScore=347.123`, `avgWin=0.725`, `avgBp=0.269` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `11-0`, `avgScore=353.840`, `avgWin=0.750`, `avgBp=0.289` | goals `17-0`, `avgScore=514.586`, `avgWin=0.875`, `avgBp=0.203` |
 
 Per-seed gains from this HL change:
 
 - Standard seed `57` improved from `1-1`, score `27.416` to `2-1`, score `161.270`.
 - Holdout seed `109` improved from `1-0`, score `189.493` to `2-0`, score `328.737`.
 - Holdout seed `127` improved from `4-0`, score `615.111` to `5-0`, score `749.371`.
-- Holdout seed `149` improved from `2-0`, score `330.360` to `3-0`, score `469.306`.
-- Standard seed `31` regressed from `2-0`, score `324.809` to `1-0`, score `196.503`; this is now the next failure pattern to inspect before broadening the rule further.
+- Holdout seed `149` improved from `2-0`, score `330.360` to `4-0`, score `596.633`.
+- Holdout seed `83` improved from `3-0`, score `460.512` to `4-0`, score `591.803`.
+- Holdout seed `97` improved from `1-0`, score `173.726` to `2-0`, score `306.385`.
+- Standard seed `71` improved from `2-0`, score `318.535` to `3-0`, score `453.296`.
+- Standard seed `31` remains below the session-start baseline (`2-0`, score `324.809` to `1-0`, score `195.901`); this is still the next standard-gate diagnosis target.
 
-Decision: keep the change if full tests/build pass, because aggregate standard and holdout gates improve substantially and goals do not regress overall. The standard seed `31` regression must be treated as the next HL diagnosis target.
+Rejected follow-up ideas from the same session:
+
+- A broad near-goal finish-stall scoring bonus/stop penalty passed local tests but regressed the gate to standard goals `11-2`, `avgScore=287.503`, `avgWin=0.700`; do not reintroduce it without a narrower hypothesis.
+- A sandboxed force-forward rule for low-speed near-goal balls produced only tiny score deltas and no standard win-proxy gain; it is not worth committing.
+
+Decision: keep the two corner-focused changes if full tests/build pass, because standard score improves and holdout goals/win proxy improve substantially. The objective is not fully complete yet because standard win proxy remains `0.725`; continue with seed `31` and the remaining standard draw/loss cases.
 
 ## Architecture
 
@@ -208,9 +221,9 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Inspect the new standard seed `31` regression from the attacking-corner rollout change. Compare match-level ball paths and first final-action divergences against the previous behavior, then decide whether the rollout trigger needs a narrower guard or position scoring needs a corner-specific term.
+1. Inspect the remaining standard seed `31` regression and standard draw/loss cases (`19` match `1`, `31` matches `0/1/2`, `57` match `1`, `71` match `3`) with a reusable diagnostic summary before adding more runtime rules.
 2. Add a reusable HL diagnostic script or JSON summary format that records hypothesis, seeds, per-match goals, final ball/tank states, action histograms, and first divergences for one failure pattern.
-3. Study late-match attacking-corner stalls where the ball is near the end wall and side wall with low velocity. Candidate mechanisms: longer rollout only in pinned attacking corners, a corner-release score term, or a macro target that moves the ball inward before shooting.
+3. Study near-goal low-speed stalls separately from corner stalls. The broad scoring and force-forward probes did not improve gates, so the next attempt should compare full match trajectories and opponent interference before changing scoring.
 4. Keep neural training available only to generate candidate behaviors or state distributions. Do not start another PPO search until a specific runtime failure pattern demands it.
 5. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
 

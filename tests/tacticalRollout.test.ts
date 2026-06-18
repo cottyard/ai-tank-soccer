@@ -37,6 +37,25 @@ describe('tactical rollout action selector', () => {
 
     expect(choice.actionIndex).toBe(4);
   });
+
+  it('uses a longer horizon to release a slow pinned attacking-corner ball', () => {
+    const state = createPinnedAttackCornerState();
+
+    const shortChoice = chooseTacticalAction({
+      state,
+      team: 'red',
+      policyActionIndex: 5,
+      rolloutFrames: 18
+    });
+    const defaultChoice = chooseTacticalAction({
+      state,
+      team: 'red',
+      policyActionIndex: 5
+    });
+
+    expect(defaultChoice.actionIndex).not.toBe(4);
+    expect(defaultChoice.score).toBeGreaterThan(shortChoice.score + 0.5);
+  });
 });
 
 function createDirectFinishState(): GameState {
@@ -62,6 +81,34 @@ function createDirectFinishState(): GameState {
   blue.position = { x: FIELD.length - 130, y: FIELD.width / 2 + 210 };
   blue.velocity = { x: 0, y: 0 };
   blue.angle = Math.PI;
+  blue.angularVelocity = 0;
+
+  return state;
+}
+
+function createPinnedAttackCornerState(): GameState {
+  const state = createInitialState();
+  state.ball.position = {
+    x: 940,
+    y: 560
+  };
+  state.ball.velocity = { x: 0, y: 0 };
+
+  const red = state.tanks.find((tank) => tank.team === 'red');
+  const blue = state.tanks.find((tank) => tank.team === 'blue');
+  if (!red || !blue) {
+    throw new Error('missing tanks');
+  }
+
+  red.position = { x: 820, y: 540 };
+  red.velocity = { x: 0, y: 0 };
+  red.angle = -1;
+  red.angularVelocity = 0;
+  red.stamina = red.maxStamina;
+
+  blue.position = { x: 970, y: 470 };
+  blue.velocity = { x: 0, y: 0 };
+  blue.angle = Math.PI / 2;
   blue.angularVelocity = 0;
 
   return state;

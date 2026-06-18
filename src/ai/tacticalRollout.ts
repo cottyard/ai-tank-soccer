@@ -1,5 +1,5 @@
 import { FIXED_DT } from '../game/match';
-import { cloneState, type GameState, type Tank, type Team } from '../game/model';
+import { FIELD, cloneState, type GameState, type Tank, type Team } from '../game/model';
 import { stepGame } from '../game/simulation';
 import type { CommandMap } from '../game/strategy';
 import { POLICY_ACTION_COUNT, actionIndexToCommand } from './policyActions';
@@ -22,10 +22,11 @@ export type TacticalActionOptions = {
 };
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
+const PINNED_ATTACK_CORNER_ROLLOUT_FRAMES = 120;
 const DEFAULT_IMPROVEMENT_MARGIN = 0.018;
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
-  const rolloutFrames = Math.max(1, Math.floor(options.rolloutFrames ?? DEFAULT_ROLLOUT_FRAMES));
+  const rolloutFrames = Math.max(1, Math.floor(options.rolloutFrames ?? defaultRolloutFrames(options)));
   const policyActionIndex = clampActionIndex(options.policyActionIndex);
   const policyScore = scoreTacticalAction({
     ...options,
@@ -68,6 +69,12 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
   };
 }
 
+function defaultRolloutFrames(options: TacticalActionOptions): number {
+  return isSlowPinnedAttackingCorner(options.state, options.team)
+    ? PINNED_ATTACK_CORNER_ROLLOUT_FRAMES
+    : DEFAULT_ROLLOUT_FRAMES;
+}
+
 type ScoreOptions = TacticalActionOptions & {
   actionIndex: number;
   rolloutFrames: number;
@@ -99,7 +106,20 @@ function scoreTacticalAction(options: ScoreOptions): number {
   const delta = evaluatePositionDelta(simulated, initial, options.team);
   const action = actionIndexToCommand(options.actionIndex);
   const trackCost = Math.abs(action.leftTrack) + Math.abs(action.rightTrack);
-  return after - before + delta.breakdown.cornerEscape * 0.45 - trackCost * 0.004;
+  return after - before +
+    delta.breakdown.cornerEscape * 0.45 +
+    -trackCost * 0.004;
+}
+
+function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): boolean {
+  const ball = state.ball;
+  const ballSpeed = Math.hypot(ball.velocity.x, ball.velocity.y);
+  if (ballSpeed > 50) {
+    return false;
+  }
+
+  return attackX(team, ball.position.x) > FIELD.length - FIELD.ballRadius - 115 &&
+    sideWallDistance(ball.position.y) < FIELD.ballRadius + 58;
 }
 
 function controlledTank(state: GameState, team: Team): Tank | undefined {
@@ -111,4 +131,12 @@ function clampActionIndex(index: number): number {
     return 4;
   }
   return Math.max(0, Math.min(POLICY_ACTION_COUNT - 1, Math.round(index)));
+}
+
+function attackX(team: Team, x: number): number {
+  return team === 'red' ? x : FIELD.length - x;
+}
+
+function sideWallDistance(y: number): number {
+  return Math.min(y - FIELD.ballRadius, FIELD.width - FIELD.ballRadius - y);
 }
