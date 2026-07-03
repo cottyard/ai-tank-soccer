@@ -13,12 +13,12 @@ export type HumanControlScheme = {
 
 export const HUMAN_CONTROL_SCHEMES: Record<Team, HumanControlScheme> = {
   red: {
-    left: { forward: 'f', backward: 'd' },
-    right: { forward: 'j', backward: 'k' }
+    left: { forward: 'q', backward: 'a' },
+    right: { forward: 'w', backward: 's' }
   },
   blue: {
-    left: { forward: 'f', backward: 'd' },
-    right: { forward: 'j', backward: 'k' }
+    left: { forward: 'p', backward: ';' },
+    right: { forward: '[', backward: "'" }
   }
 };
 

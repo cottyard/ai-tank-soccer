@@ -21,7 +21,7 @@ import {
   saveLearningReplay,
   serializeReplayExport
 } from './ai/learningMode';
-import { createNeuralStrategy } from './ai/neuralStrategy';
+import { createAsyncNeuralStrategy } from './ai/asyncNeuralStrategy';
 import { evaluatePolicyGate, selectAcceptedPolicy } from './ai/policyGate';
 import { trainSelfPlayPolicy } from './ai/selfPlayTraining';
 import { traditionalStrategy } from './ai/traditionalStrategy';
@@ -37,9 +37,13 @@ type ControlMode = 'idle' | 'traditional' | 'neural' | 'human';
 
 type ControlSelections = Record<Team, ControlMode>;
 
+type DisposableStrategy = Strategy & {
+  dispose?: () => void;
+};
+
 type StrategyPair = {
-  red: Strategy;
-  blue: Strategy;
+  red: DisposableStrategy;
+  blue: DisposableStrategy;
 };
 
 const idleStrategy: Strategy = {
@@ -55,6 +59,7 @@ const MODE_LABELS: Record<ControlMode, string> = {
 };
 
 const BUNDLED_POLICY_VERSION_KEY = 'tank-soccer-bundled-policy-version-v1';
+const MAX_FRAME_STEPS_PER_RENDER = 5;
 
 const HUMAN_CONTROL_KEYS = new Set(
   Object.values(HUMAN_CONTROL_SCHEMES).flatMap((scheme) => [
@@ -146,8 +151,12 @@ app.innerHTML = `
             </label>
             <div class="manual-keys" aria-label="Human control keys">
               <div class="key-row red">
-                <span>Keys</span>
-                <span><kbd>F</kbd>/<kbd>D</kbd> left · <kbd>J</kbd>/<kbd>K</kbd> right</span>
+                <span>Red</span>
+                <span><kbd>Q</kbd>/<kbd>A</kbd> left · <kbd>W</kbd>/<kbd>S</kbd> right</span>
+              </div>
+              <div class="key-row blue">
+                <span>Blue</span>
+                <span><kbd>P</kbd>/<kbd>;</kbd> left · <kbd>[</kbd>/<kbd>'</kbd> right</span>
               </div>
             </div>
           </div>
@@ -264,6 +273,8 @@ let running = true;
 let accumulator = 0;
 let lastTimestamp = performance.now();
 let lastLoggedGoalFrame = -1;
+let neuralWorkerErrorLogged = false;
+let learningPersistTimer: number | undefined;
 
 const resizeObserver = new ResizeObserver(() => {
   renderer.resize();
@@ -372,6 +383,7 @@ exportReplayButton.addEventListener('click', () => {
 });
 
 resetLearnedButton.addEventListener('click', () => {
+  cancelScheduledLearningPersist();
   clearLearnedPolicy(window.localStorage);
   window.localStorage.removeItem(BUNDLED_POLICY_VERSION_KEY);
   learning.reset(resetWeights);
@@ -425,6 +437,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+window.addEventListener('beforeunload', () => {
+  if (learningPersistTimer !== undefined) {
+    cancelScheduledLearningPersist();
+    persistLearningState();
+  }
+  disposeStrategyPair(strategies);
+});
+
 syncControlSelects();
 setRunButton();
 appendLog('Kickoff', savedPolicy ? 'Loaded learned neural model.' : '1v1 controls ready. AI iteration is paused.');
@@ -444,9 +464,14 @@ function loop(timestamp: number): void {
 
   if (running) {
     accumulator += elapsed;
-    while (accumulator >= FIXED_DT) {
+    let steps = 0;
+    while (accumulator >= FIXED_DT && steps < MAX_FRAME_STEPS_PER_RENDER) {
       advanceFrame();
       accumulator -= FIXED_DT;
+      steps += 1;
+    }
+    if (accumulator >= FIXED_DT) {
+      accumulator = 0;
     }
   } else {
     accumulator = 0;
@@ -468,7 +493,7 @@ function advanceFrame(): void {
     const result = learning.recordAiTick(state, 'red', humanCommands['red-0'] ?? { leftTrack: 0, rightTrack: 0 });
     if (result.trainedSamples > 0) {
       neuralWeights = learning.currentWeights;
-      persistLearningState();
+      scheduleLearningPersist();
     }
   }
 
@@ -588,7 +613,7 @@ function makeStrategyPair(modes: ControlSelections): StrategyPair {
   };
 }
 
-function strategyForMode(mode: ControlMode): Strategy {
+function strategyForMode(mode: ControlMode): DisposableStrategy {
   if (mode === 'human') {
     return idleStrategy;
   }
@@ -599,7 +624,16 @@ function strategyForMode(mode: ControlMode): Strategy {
     return traditionalStrategy;
   }
 
-  return createNeuralStrategy({ weights: () => neuralWeights, name: 'neural' });
+  return createAsyncNeuralStrategy({
+    weights: () => neuralWeights,
+    name: 'neural',
+    onError: (message) => {
+      if (!neuralWorkerErrorLogged) {
+        neuralWorkerErrorLogged = true;
+        appendLog('Neural AI', `Worker decision failed: ${message}`);
+      }
+    }
+  });
 }
 
 function humanCommandsForActiveTeams(): CommandMap {
@@ -634,12 +668,20 @@ function startLearningMode(): void {
   rebuildStrategies();
   resetMatch();
   syncControlSelects();
-  appendLog('Learning', 'Human red vs Neural blue. Use F/D for left track and J/K for right track.');
+  appendLog('Learning', 'Human red vs Neural blue. Use Q/A for left track and W/S for right track.');
 }
 
 function rebuildStrategies(): void {
+  disposeStrategyPair(strategies);
   strategies = makeStrategyPair(controlModes);
   aiClock = new AiClock(strategies.red, strategies.blue, PHYSICS_HZ, AI_HZ);
+}
+
+function disposeStrategyPair(pair: StrategyPair): void {
+  pair.red.dispose?.();
+  if (pair.blue !== pair.red) {
+    pair.blue.dispose?.();
+  }
 }
 
 function persistLearningState(): void {
@@ -653,6 +695,26 @@ function persistLearningState(): void {
     }
   });
   saveLearningReplay(window.localStorage, learning.replaySamples);
+}
+
+function scheduleLearningPersist(): void {
+  if (learningPersistTimer !== undefined) {
+    return;
+  }
+
+  learningPersistTimer = window.setTimeout(() => {
+    learningPersistTimer = undefined;
+    persistLearningState();
+  }, 250);
+}
+
+function cancelScheduledLearningPersist(): void {
+  if (learningPersistTimer === undefined) {
+    return;
+  }
+
+  window.clearTimeout(learningPersistTimer);
+  learningPersistTimer = undefined;
 }
 
 function setRunButton(): void {
