@@ -111,6 +111,8 @@ Diagnostic tooling added after the corner fixes:
 
 - `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
 - `scripts/probe-runtime-macros.ts` runs fixed-action counterfactuals against the browser-runtime policy. It now caches aligned start states and forks from those frames, which keeps broad macro sweeps practical without changing AI-decision-frame semantics.
+- `scripts/inspect-runtime-match.ts` emits per-decision JSONL snapshots with ball/tank geometry, pressure signals, rollout scores, optional fixed-horizon rollout comparisons, and counterfactual tactical choices for decisions hidden by stamina waits.
+- `scripts/probe-runtime-sequences.ts` runs two-step fixed-action counterfactuals from cached decision-aligned states and ranks the resulting final ball threat. It is useful for checking whether a local release needs sequence/search work before adding another direct action guard.
 - Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `14-1`, wins `12`, draws `7`, losses `1`; the fast own-goal defensive horizon improves it again to goals `14-0`, wins `13`, draws `7`, losses `0`.
 - Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
@@ -168,6 +170,7 @@ The next target was to convert one of the remaining standard draws without losin
 Accepted addition:
 
 1. Offset rolling finish setups now wait before touching the ball when the ball is in the goal lane but not centered, the attack velocity is non-negative, speed is controlled, own-goal pressure is low, stamina is at or below `0.30`, and the opponent is also close enough that extra contact is likely to redirect the shot. Centered rolling-finish pushes remain active through the existing low-lateral-drift guard.
+2. Fast centering finish follow-through states now use a 36-frame tactical rollout horizon instead of the default 18-frame horizon when the ball is already in the attacking finish lane, rolling quickly toward goal, drifting back toward center, and the controlled tank is still in close contact range. This targets standard `71:3` frame `528`, where the short rollout switched a raw forward follow-through into a side action that left the ball pinned deep near the side wall. The longer horizon keeps the raw forward action and improves final threat quality without changing aggregate goals.
 
 Rejected during this continuation:
 
@@ -175,12 +178,13 @@ Rejected during this continuation:
 - A lane-only side finish wait and several narrower side-lane threshold variants produced only tiny score movement and did not convert `43:1`.
 - A deep loose-ball low-stamina exception for `71:0` improved some local ball-progress probes but did not improve the match gate and sometimes created own-goal danger.
 - Single-action macro probes for `31:0` and `71:3` found local ball-position changes but no reliable conversion; these need sequence/search or scoring-model work rather than direct action guards.
+- A centered low-stamina drifting-finish exception for `71:3` skipped the stamina wait at frame `546` and let rollout choose forward, but the gate did not improve: standard stayed goals `19-0`, `avgWin=0.925` while score slipped to `569.369`; holdout score also slipped slightly to `568.008`. Do not weaken the low-stamina wait unless it produces an actual conversion or a clearer aggregate gain.
 
 Updated gate comparison from the previous accepted `0.900` baseline:
 
 | Gate | Previous Accepted | Current |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.446`, `avgWin=0.925`, `avgBp=0.185` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.547`, `avgWin=0.925`, `avgBp=0.187` |
 | Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `19-0`, `avgScore=568.033`, `avgWin=0.875`, `avgBp=0.196` |
 
 Per-seed current standard gate:
@@ -189,7 +193,7 @@ Per-seed current standard gate:
 - `31`: `3-0`, score `467.952`, win `0.875`, ball progress `0.295`.
 - `43`: `4-0`, score `603.637`, win `1.000`, ball progress `0.233`.
 - `57`: `4-0`, score `583.157`, win `1.000`, ball progress `-0.023`.
-- `71`: `3-0`, score `457.439`, win `0.750`, ball progress `0.234`.
+- `71`: `3-0`, score `457.945`, win `0.750`, ball progress `0.240`.
 
 Per-seed current holdout gate:
 
@@ -199,9 +203,9 @@ Per-seed current holdout gate:
 - `127`: `6-0`, score `878.000`, win `1.000`, ball progress `0.287`.
 - `149`: `4-0`, score `599.365`, win `0.875`, ball progress `0.250`.
 
-Current remaining standard draws are `31:0`, `71:0`, and `71:3`. The next practical target is `71:3`, which now ends as an attacking side-wall/high-finish draw with the ball near the side wall and several low-stamina stop/rollout decisions. Treat `71:0` separately as a midfield/low-finish recovery problem, and avoid direct low-stamina loose-ball drive exceptions unless they survive own-goal safety checks.
+Current remaining standard draws are still `31:0`, `71:0`, and `71:3`. The accepted fast-centering rollout improves `71:3` threat quality, moving the final ball from the deep side-wall finish (`attackX=917.474`, side-wall distance `69.122`) to a less pinned attacking state (`attackX=944.054`, side-wall distance `181.948`), but it does not convert the match. The next practical target remains `71:3`, now as a follow-up/continuation search problem after the centering release. Treat `71:0` separately as a midfield/low-finish recovery problem, and avoid direct low-stamina loose-ball drive exceptions unless they survive own-goal safety checks.
 
-Decision: keep the offset rolling finish wait if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and holdout remained safe at `19-0` with a small score gain.
+Decision: keep the offset rolling finish wait and fast-centering finish rollout if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and the latest rollout addition gives a small standard score/ball-progress gain over the prior accepted `0.925` state while holdout remains safe at `19-0`.
 
 ## Architecture
 

@@ -22,6 +22,7 @@ export type TacticalActionOptions = {
 };
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
+const FAST_CENTERING_FINISH_ROLLOUT_FRAMES = 36;
 const PINNED_ATTACK_CORNER_ROLLOUT_FRAMES = 120;
 const URGENT_OWN_GOAL_ROLLOUT_FRAMES = 72;
 const ATTACK_STALL_SEQUENCE_FIRST_FRAMES = 24;
@@ -92,6 +93,10 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
 function defaultRolloutFrames(options: TacticalActionOptions): number {
   if (isUrgentOwnGoalThreat(options.state, options.team)) {
     return URGENT_OWN_GOAL_ROLLOUT_FRAMES;
+  }
+
+  if (isFastCenteringFinishFollowThrough(options.state, options.team)) {
+    return FAST_CENTERING_FINISH_ROLLOUT_FRAMES;
   }
 
   return isSlowPinnedAttackingCorner(options.state, options.team)
@@ -225,6 +230,42 @@ function isUrgentOwnGoalThreat(state: Readonly<GameState>, team: Team): boolean 
     lane > 0.72 &&
     incomingSpeed > 120 &&
     ballSpeed > 140;
+}
+
+function isFastCenteringFinishFollowThrough(state: Readonly<GameState>, team: Team): boolean {
+  const tank = controlledTank(state as GameState, team);
+  if (!tank || staminaRatio(tank) < 0.24) {
+    return false;
+  }
+
+  const sign = team === 'red' ? 1 : -1;
+  const ballAttackX = attackX(team, state.ball.position.x);
+  if (ballAttackX < FIELD.length - 230 || ballAttackX > FIELD.length - 165) {
+    return false;
+  }
+
+  const attackBallY = (state.ball.position.y - FIELD.width / 2) * sign;
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  if (lane < 0.68 || lane > 0.88 || Math.abs(attackBallY) < 24) {
+    return false;
+  }
+
+  const attackVelocity = state.ball.velocity.x * sign;
+  const attackLateralVelocity = state.ball.velocity.y * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (
+    attackVelocity < 70 ||
+    ballSpeed > 130 ||
+    attackBallY * attackLateralVelocity >= 0
+  ) {
+    return false;
+  }
+
+  const ballDistance = Math.hypot(
+    tank.position.x - state.ball.position.x,
+    tank.position.y - state.ball.position.y
+  );
+  return ballDistance < FIELD.tankRadius * 1.1;
 }
 
 function tacticalSequenceProfile(state: Readonly<GameState>, team: Team): TacticalSequenceProfile | undefined {

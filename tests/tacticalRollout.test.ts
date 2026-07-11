@@ -140,6 +140,25 @@ describe('tactical rollout action selector', () => {
     expect(defaultChoice.actionIndex).not.toBe(0);
     expect(defaultChoice.score).toBeGreaterThan(defaultChoice.policyScore + 0.15);
   });
+
+  it('uses a longer horizon for a fast centering finish follow-through', () => {
+    const state = createFastCenteringFinishFollowThroughState();
+
+    const shortChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8,
+      rolloutFrames: 18
+    });
+    const defaultChoice = chooseTacticalAction({
+      state,
+      team: 'blue',
+      policyActionIndex: 8
+    });
+
+    expect(shortChoice.actionIndex).toBe(5);
+    expect(defaultChoice.actionIndex).toBe(8);
+  });
 });
 
 function createDirectFinishState(): GameState {
@@ -273,6 +292,34 @@ function createFastOwnGoalThreatState(): GameState {
   blue.velocity = { x: 0, y: 0 };
   blue.angle = Math.PI;
   blue.angularVelocity = 0;
+
+  return state;
+}
+
+function createFastCenteringFinishFollowThroughState(): GameState {
+  const state = createInitialState();
+  state.frame = 528;
+  state.time = 17.6;
+  state.ball.position = { x: 201.189, y: 301.427 };
+  state.ball.velocity = { x: -103.298, y: 26.439 };
+
+  const red = state.tanks.find((tank) => tank.team === 'red');
+  const blue = state.tanks.find((tank) => tank.team === 'blue');
+  if (!red || !blue) {
+    throw new Error('missing tanks');
+  }
+
+  blue.position = { x: 299.756, y: 311.494 };
+  blue.velocity = { x: 0, y: 0 };
+  blue.angle = -3.04;
+  blue.angularVelocity = 0;
+  blue.stamina = blue.maxStamina * 0.28;
+
+  red.position = { x: 96.17, y: 307.577 };
+  red.velocity = { x: 0, y: 0 };
+  red.angle = -0.002;
+  red.angularVelocity = 0;
+  red.stamina = red.maxStamina * 0.444;
 
   return state;
 }
