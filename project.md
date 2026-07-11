@@ -207,6 +207,14 @@ Current remaining standard draws are still `31:0`, `71:0`, and `71:3`. The accep
 
 Decision: keep the offset rolling finish wait and fast-centering finish rollout if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and the latest rollout addition gives a small standard score/ball-progress gain over the prior accepted `0.925` state while holdout remains safe at `19-0`.
 
+2026-07-11 follow-up diagnostics from the accepted `avgWin=0.925` HL baseline:
+
+No runtime change was accepted in this pass. The main target was still standard draw `71:3`. Fixed sequence probes showed that a committed action-`7` continuation from frames `546` or `564` can convert the chance by frame `720`, but converting that observation directly into runtime policy did not survive online re-decision. A narrow direct action-`7` follow-through guard kept the first continuation touch but failed to convert `71:3`; widening it made the ball pin even deeper on the side wall. A `12+36` outward-finish tactical sequence profile made rollout choose action `7` at frame `546`, but then chose stop at frame `552`, increased lateral side-wall drift, and also failed to convert.
+
+The lesson is that `71:3` is not ready for another direct action guard or a simple two-step rollout trigger. The failure is in continuation valuation: the evaluator does not reliably price the future cost of a fast ball drifting out of the finish lane toward the side wall, and isolated macro success does not imply the online rollout will preserve the same contact geometry. Do not reintroduce action-`7` follow-through guards or the broad `12+36` outward-finish sequence unless the rollout evaluator first explains and prevents the side-wall drift regression.
+
+`71:0` was inspected as a separate midfield/low-finish recovery problem. Focused single/two-step probes around frames `360` through `552` improved final ball placement in some branches but did not find a conversion at `600` frames. The best probes moved the final ball toward midfield or a better lane, but no candidate produced a clear match outcome gain worth encoding.
+
 ## Architecture
 
 - Browser runtime: TypeScript + Vite.
@@ -360,8 +368,8 @@ The practical lesson is not that neural networks are useless. The lesson is that
 ## Next Work Plan
 
 1. Use `scripts/diagnose-runtime-failures.ts` and cached `scripts/probe-runtime-macros.ts` sweeps to study the remaining standard draws: `31:0`, `71:0`, and `71:3`.
-2. Prioritize `71:3` as a high-finish side-wall draw. Single-action probes changed final ball placement but did not convert it, so inspect sequence/search scoring and side-wall continuation before adding direct action guards.
-3. Treat `71:0` as a separate midfield/low-finish recovery problem. Previous low-stamina loose-ball drive exceptions improved some local progress but failed aggregate gate safety.
+2. Prioritize `71:3` as a rollout-evaluator problem, not an action-guard problem. Direct action-`7` follow-through and a broad `12+36` outward-finish sequence both worsened side-wall drift under online re-decision; next inspect how position evaluation prices fast lateral drift out of the finish lane before adding another trigger.
+3. Treat `71:0` as a separate midfield/low-finish recovery problem. Recent focused macro and sequence probes improved some final ball positions but found no `600`-frame conversion, so do not add low-stamina drive exceptions without a stronger aggregate signal.
 4. Revisit `31:0` only with a cleaner contact/sequence model. Simple force-forward, stop, and side-lane wait probes have not produced a reliable conversion.
 5. When progress stalls, explicitly audit whether the neural policy, traditional strategy, heuristic wrapper, or tactical rollout owns the right state classes. A focused neural component or policy-boundary change is acceptable if it targets a concrete failure and survives standard/holdout gates.
 6. If further improvements stall on search speed, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking has reduced one immediate counterfactual bottleneck.
