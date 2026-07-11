@@ -161,6 +161,48 @@ Current remaining standard draws after the accepted continuation are `31:0`, `43
 
 Decision: keep the continuation if full tests/build pass. The standard gate improved from `avgWin=0.800` to `avgWin=0.900`, which is a relative +12.5% improvement from the accepted baseline and satisfies the requested additional +10% objective while holdout remains safe.
 
+2026-07-11 continuation from the accepted `avgWin=0.900` HL baseline:
+
+The next target was to convert one of the remaining standard draws without losing the recovered `19` and `31` safety. The accepted lesson came from comparing `43:1` and `19:1`: blindly waiting on rolling finish setups can convert one draw but regress a central push. The safer pattern is narrower: when stamina is low, the ball is already rolling toward goal in the attacking third, both tanks are in close contact range, and the ball is offset from the goal-center line by at least `30px`, stop briefly instead of adding another weak touch that can spoil the setup.
+
+Accepted addition:
+
+1. Offset rolling finish setups now wait before touching the ball when the ball is in the goal lane but not centered, the attack velocity is non-negative, speed is controlled, own-goal pressure is low, stamina is at or below `0.30`, and the opponent is also close enough that extra contact is likely to redirect the shot. Centered rolling-finish pushes remain active through the existing low-lateral-drift guard.
+
+Rejected during this continuation:
+
+- A broad rolling-finish wait converted `43:1` but regressed `19` from `4-0` to `3-0`; do not remove the center-offset guard.
+- A lane-only side finish wait and several narrower side-lane threshold variants produced only tiny score movement and did not convert `43:1`.
+- A deep loose-ball low-stamina exception for `71:0` improved some local ball-progress probes but did not improve the match gate and sometimes created own-goal danger.
+- Single-action macro probes for `31:0` and `71:3` found local ball-position changes but no reliable conversion; these need sequence/search or scoring-model work rather than direct action guards.
+
+Updated gate comparison from the previous accepted `0.900` baseline:
+
+| Gate | Previous Accepted | Current |
+| --- | ---: | ---: |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.446`, `avgWin=0.925`, `avgBp=0.185` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `19-0`, `avgScore=568.033`, `avgWin=0.875`, `avgBp=0.196` |
+
+Per-seed current standard gate:
+
+- `19`: `5-0`, score `735.044`, win `1.000`, ball progress `0.188`.
+- `31`: `3-0`, score `467.952`, win `0.875`, ball progress `0.295`.
+- `43`: `4-0`, score `603.637`, win `1.000`, ball progress `0.233`.
+- `57`: `4-0`, score `583.157`, win `1.000`, ball progress `-0.023`.
+- `71`: `3-0`, score `457.439`, win `0.750`, ball progress `0.234`.
+
+Per-seed current holdout gate:
+
+- `83`: `4-0`, score `595.823`, win `1.000`, ball progress `0.135`.
+- `97`: `2-0`, score `309.248`, win `0.750`, ball progress `0.069`.
+- `109`: `3-0`, score `457.730`, win `0.750`, ball progress `0.237`.
+- `127`: `6-0`, score `878.000`, win `1.000`, ball progress `0.287`.
+- `149`: `4-0`, score `599.365`, win `0.875`, ball progress `0.250`.
+
+Current remaining standard draws are `31:0`, `71:0`, and `71:3`. The next practical target is `71:3`, which now ends as an attacking side-wall/high-finish draw with the ball near the side wall and several low-stamina stop/rollout decisions. Treat `71:0` separately as a midfield/low-finish recovery problem, and avoid direct low-stamina loose-ball drive exceptions unless they survive own-goal safety checks.
+
+Decision: keep the offset rolling finish wait if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and holdout remained safe at `19-0` with a small score gain.
+
 ## Architecture
 
 - Browser runtime: TypeScript + Vite.
@@ -313,10 +355,10 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Use `scripts/diagnose-runtime-failures.ts` and cached `scripts/probe-runtime-macros.ts` sweeps to study the remaining standard draws: `31:0`, `43:1`, `71:0`, and `71:3`.
-2. Prioritize `31:0` and `43:1` as high-finish-pressure draws. Avoid broad critical-stamina or near-goal force rules; previous broader variants converted one draw while regressing another.
-3. Treat `71:0` as a separate midfield/low-finish problem rather than a finish-stall problem.
-4. For `71:3`, inspect whether the failure is side-wall geometry, critical-stamina regulation, or rollout scoring before changing thresholds.
+1. Use `scripts/diagnose-runtime-failures.ts` and cached `scripts/probe-runtime-macros.ts` sweeps to study the remaining standard draws: `31:0`, `71:0`, and `71:3`.
+2. Prioritize `71:3` as a high-finish side-wall draw. Single-action probes changed final ball placement but did not convert it, so inspect sequence/search scoring and side-wall continuation before adding direct action guards.
+3. Treat `71:0` as a separate midfield/low-finish recovery problem. Previous low-stamina loose-ball drive exceptions improved some local progress but failed aggregate gate safety.
+4. Revisit `31:0` only with a cleaner contact/sequence model. Simple force-forward, stop, and side-lane wait probes have not produced a reliable conversion.
 5. When progress stalls, explicitly audit whether the neural policy, traditional strategy, heuristic wrapper, or tactical rollout owns the right state classes. A focused neural component or policy-boundary change is acceptable if it targets a concrete failure and survives standard/holdout gates.
 6. If further improvements stall on search speed, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking has reduced one immediate counterfactual bottleneck.
 7. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.

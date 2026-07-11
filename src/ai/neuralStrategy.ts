@@ -278,6 +278,10 @@ function shouldWaitForDriftingFinish(
   tank: Tank,
   pressures: PressureSignals
 ): boolean {
+  if (shouldWaitForOffsetRollingFinish(state, team, tank, pressures)) {
+    return true;
+  }
+
   if (staminaRatio(tank) > 0.24 || pressures.finishing < 0.9 || pressures.ownGoal > 0.24) {
     return false;
   }
@@ -297,6 +301,51 @@ function shouldWaitForDriftingFinish(
 
   const ballDistance = ballDistanceToTank(state, tank);
   return ballDistance <= tank.radius + state.ball.radius + DECISIVE_CONTACT_BUFFER;
+}
+
+function shouldWaitForOffsetRollingFinish(
+  state: Readonly<GameState>,
+  team: Team,
+  tank: Tank,
+  pressures: PressureSignals
+): boolean {
+  if (staminaRatio(tank) > 0.3 || pressures.ownGoal > 0.24) {
+    return false;
+  }
+
+  const sign = teamSign(team);
+  const attackBallX = (state.ball.position.x - FIELD.length / 2) * sign + FIELD.length / 2;
+  const attackBallY = (state.ball.position.y - FIELD.width / 2) * sign;
+  const lane = 1 - clamp01(Math.abs(state.ball.position.y - FIELD.width / 2) / (FIELD.goalMouth * 0.74));
+  if (
+    attackBallX < FIELD.length - 225 ||
+    lane < 0.45 ||
+    Math.abs(attackBallY) < 30
+  ) {
+    return false;
+  }
+
+  const attackVelocity = state.ball.velocity.x * sign;
+  const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
+  if (attackVelocity < 0 || ballSpeed > 90) {
+    return false;
+  }
+
+  const ballDistance = ballDistanceToTank(state, tank);
+  if (ballDistance > tank.radius + state.ball.radius + DECISIVE_CONTACT_BUFFER) {
+    return false;
+  }
+
+  const opponent = nearestOpponentTank(state, team);
+  if (!opponent) {
+    return false;
+  }
+
+  const opponentDistance = Math.hypot(
+    opponent.position.x - state.ball.position.x,
+    opponent.position.y - state.ball.position.y
+  );
+  return opponentDistance <= tank.radius + state.ball.radius + DECISIVE_CONTACT_BUFFER;
 }
 
 function urgentStaminaSpend(

@@ -295,6 +295,19 @@ describe('neural tank soccer strategy', () => {
     });
   });
 
+  it('waits for an offset rolling finish instead of spoiling the setup touch', () => {
+    const state = createOffsetRollingFinishState();
+    const red = tank(state, 'red');
+    red.stamina = red.maxStamina * 0.25;
+
+    expect(createNeuralStrategy({
+      weights: preferredActionWeights(8)
+    }).decide(state, 'red')['red-0']).toEqual({
+      leftTrack: 0,
+      rightTrack: 0
+    });
+  });
+
   it('waits for a safe own-corner release instead of chasing the rolling wall ball', () => {
     const state = createInitialState();
     const red = tank(state, 'red');
@@ -604,6 +617,33 @@ function createRollingFinishPushState(): GameState {
 
   const blue = tank(state, 'blue');
   blue.position = { x: FIELD.length - 145, y: FIELD.width / 2 + 6 };
+  blue.velocity = { x: 0, y: 0 };
+  blue.angle = Math.PI;
+  blue.angularVelocity = 0;
+
+  return state;
+}
+
+function createOffsetRollingFinishState(): GameState {
+  const state = createInitialState();
+  state.ball.position = { x: FIELD.length - 200, y: FIELD.width / 2 + 42 };
+  state.ball.velocity = { x: 35, y: 5 };
+
+  const red = tank(state, 'red');
+  red.position = {
+    x: state.ball.position.x - FIELD.ballRadius - FIELD.tankRadius + 4,
+    y: state.ball.position.y
+  };
+  red.velocity = { x: 0, y: 0 };
+  red.angle = 0;
+  red.angularVelocity = 0;
+  red.stamina = red.maxStamina;
+
+  const blue = tank(state, 'blue');
+  blue.position = {
+    x: state.ball.position.x + FIELD.ballRadius + FIELD.tankRadius - 4,
+    y: state.ball.position.y
+  };
   blue.velocity = { x: 0, y: 0 };
   blue.angle = Math.PI;
   blue.angularVelocity = 0;
