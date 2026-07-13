@@ -112,7 +112,7 @@ Diagnostic tooling added after the corner fixes:
 - `scripts/diagnose-runtime-failures.ts` emits match-level HL summaries with outcome, final ball/tank state, action histograms, pressure averages, and tail decisions.
 - `scripts/probe-runtime-macros.ts` runs fixed-action counterfactuals against the browser-runtime policy. It now caches aligned start states and forks from those frames, which keeps broad macro sweeps practical without changing AI-decision-frame semantics.
 - `scripts/inspect-runtime-match.ts` emits per-decision JSONL snapshots with ball/tank geometry, pressure signals, rollout scores, optional fixed-horizon rollout comparisons, and counterfactual tactical choices for decisions hidden by stamina waits.
-- `scripts/probe-runtime-sequences.ts` runs two-step fixed-action counterfactuals from cached decision-aligned states and ranks the resulting final ball threat. It is useful for checking whether a local release needs sequence/search work before adding another direct action guard.
+- `scripts/probe-runtime-sequences.ts` runs two-step fixed-action counterfactuals from cached decision-aligned states and ranks the resulting final ball threat. It supports `--max-combinations` for bounded partial sweeps and is useful for checking whether a local release needs sequence/search work before adding another direct action guard.
 - Standard failure snapshot after the accepted corner changes: goals `12-1`, wins `10`, draws `9`, losses `1` over 20 standard matches. The two-step sequence improves this to goals `14-1`, wins `12`, draws `7`, losses `1`; the fast own-goal defensive horizon improves it again to goals `14-0`, wins `13`, draws `7`, losses `0`.
 - Main observed failure patterns: high-pressure near-goal stalls where tactical rollout prefers stop over the raw forward action (`57:1`, `31:0/1`), and attacking side-wall/corner stalls where longer horizons can see local movement but still do not change match outcomes (`19:3`, `31:2`).
 
@@ -214,6 +214,14 @@ No runtime change was accepted in this pass. The main target was still standard 
 The lesson is that `71:3` is not ready for another direct action guard or a simple two-step rollout trigger. The failure is in continuation valuation: the evaluator does not reliably price the future cost of a fast ball drifting out of the finish lane toward the side wall, and isolated macro success does not imply the online rollout will preserve the same contact geometry. Do not reintroduce action-`7` follow-through guards or the broad `12+36` outward-finish sequence unless the rollout evaluator first explains and prevents the side-wall drift regression.
 
 `71:0` was inspected as a separate midfield/low-finish recovery problem. Focused single/two-step probes around frames `360` through `552` improved final ball placement in some branches but did not find a conversion at `600` frames. The best probes moved the final ball toward midfield or a better lane, but no candidate produced a clear match outcome gain worth encoding.
+
+2026-07-13 continuation diagnostics from the accepted `avgWin=0.925` HL baseline:
+
+No runtime policy change was accepted in this pass. The first target remained `71:3`. Re-inspecting frames `480` through `594` confirmed that the accepted 36-frame fast-centering rollout preserves the forward follow-through at frame `528`, but later low-stamina waits and online re-decisions still leave the ball short of conversion. A focused 600-frame sequence sweep found better final threat positions but no goal; the best sampled branch ended around `attackX=940.850`, lane `0.997`, still `0-0`. Narrow 720-frame checks of the strongest 600-frame branches also stayed `0-0`, which weakens the case for another direct action guard.
+
+`31:0` was rechecked as a deep centered finish that appears tempting for a low-stamina forward exception. Direct action-`8` macro probes at frames `552`, `558`, and `570` did not convert the match by `600` frames. A safety probe on already-converted standard seed `19:1` showed that forcing action `8` too early can erase an existing goal, so broad low-stamina finish-drive exceptions remain unsafe. Keep treating `31:0` as a contact/sequence-model problem rather than a stamina-guard relaxation.
+
+The accepted change from this pass is diagnostic infrastructure only: `scripts/probe-runtime-sequences.ts` now supports `--max-combinations`, returns planned/completed/truncated metadata, and prints a `partial completed=x/y` line when a bounded sweep stops early. This addresses the immediate TypeScript counterfactual bottleneck seen while probing `71:3` and `31:0`, where full sequence grids became too slow to be useful. Runtime behavior and gates are unchanged.
 
 ## Architecture
 
@@ -367,12 +375,12 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Use `scripts/diagnose-runtime-failures.ts` and cached `scripts/probe-runtime-macros.ts` sweeps to study the remaining standard draws: `31:0`, `71:0`, and `71:3`.
-2. Prioritize `71:3` as a rollout-evaluator problem, not an action-guard problem. Direct action-`7` follow-through and a broad `12+36` outward-finish sequence both worsened side-wall drift under online re-decision; next inspect how position evaluation prices fast lateral drift out of the finish lane before adding another trigger.
+1. Use `scripts/diagnose-runtime-failures.ts`, cached `scripts/probe-runtime-macros.ts`, and budgeted `scripts/probe-runtime-sequences.ts --max-combinations ...` sweeps to study the remaining standard draws: `31:0`, `71:0`, and `71:3`.
+2. Prioritize `71:3` as a rollout-evaluator problem, not an action-guard problem. Direct action-`7` follow-through, action-`8` low-stamina continuation, and a broad `12+36` outward-finish sequence have not converted under online re-decision; next inspect how position evaluation prices fast lateral drift out of the finish lane before adding another trigger.
 3. Treat `71:0` as a separate midfield/low-finish recovery problem. Recent focused macro and sequence probes improved some final ball positions but found no `600`-frame conversion, so do not add low-stamina drive exceptions without a stronger aggregate signal.
 4. Revisit `31:0` only with a cleaner contact/sequence model. Simple force-forward, stop, and side-lane wait probes have not produced a reliable conversion.
 5. When progress stalls, explicitly audit whether the neural policy, traditional strategy, heuristic wrapper, or tactical rollout owns the right state classes. A focused neural component or policy-boundary change is acceptable if it targets a concrete failure and survives standard/holdout gates.
-6. If further improvements stall on search speed, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking has reduced one immediate counterfactual bottleneck.
+6. If further improvements still stall on search speed after bounded sequence sweeps, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking and capped sequence sweeps reduce the immediate counterfactual bottleneck.
 7. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
 
 ## Repository Hygiene

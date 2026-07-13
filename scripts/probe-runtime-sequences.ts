@@ -13,7 +13,7 @@ declare const process: {
   exitCode?: number;
 };
 
-type SequenceProbeOptions = {
+export type SequenceProbeOptions = {
   weightsPath: string;
   seed: number;
   match: number;
@@ -24,9 +24,10 @@ type SequenceProbeOptions = {
   firstActions: number[];
   secondActions: number[];
   limit: number;
+  maxCombinations: number;
 };
 
-type SequenceProbeRow = {
+export type SequenceProbeRow = {
   start?: number;
   firstDuration?: number;
   secondDuration?: number;
@@ -52,7 +53,8 @@ export function parseSequenceProbeArgs(argv: readonly string[]): SequenceProbeOp
     secondDurations: numberListArg(argv, '--second-durations', [18, 36, 54]),
     firstActions: actionListArg(argv, '--first-actions'),
     secondActions: actionListArg(argv, '--second-actions'),
-    limit: positiveIntegerArg(argv, '--limit', 40)
+    limit: positiveIntegerArg(argv, '--limit', 40),
+    maxCombinations: positiveIntegerArg(argv, '--max-combinations', Number.POSITIVE_INFINITY)
   };
 }
 
@@ -60,6 +62,9 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   try {
     const result = runSequenceProbe(parseSequenceProbeArgs(argv));
     console.log(formatRow('baseline', result.baseline));
+    if (result.truncated) {
+      console.log(`partial completed=${result.completedRows}/${result.plannedRows}`);
+    }
     for (const row of result.rows) {
       console.log(formatRow(
         `start=${row.start} first=${row.firstDuration}:${row.firstActionIndex} second=${row.secondDuration}:${row.secondActionIndex}`,
@@ -72,16 +77,28 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   }
 }
 
-function runSequenceProbe(options: SequenceProbeOptions): {
+export function runSequenceProbe(options: SequenceProbeOptions): {
   baseline: SequenceProbeRow;
   rows: SequenceProbeRow[];
+  plannedRows: number;
+  completedRows: number;
+  truncated: boolean;
 } {
   const weights = loadWeightsPayload(readFileSync(options.weightsPath, 'utf8'));
   const team: Team = options.match % 2 === 0 ? 'red' : 'blue';
   const baseline = runOne(options, team, weights);
   const startStates = createAlignedStartStates(options, team, weights);
   const rows: SequenceProbeRow[] = [];
+  const plannedRows =
+    options.starts.filter((start) => startStates.has(start)).length *
+    options.firstDurations.length *
+    options.secondDurations.length *
+    options.firstActions.length *
+    options.secondActions.length;
+  let completedRows = 0;
+  let truncated = false;
 
+  sequenceRows:
   for (const start of options.starts) {
     const startState = startStates.get(start);
     if (!startState) {
@@ -91,6 +108,10 @@ function runSequenceProbe(options: SequenceProbeOptions): {
       for (const secondDuration of options.secondDurations) {
         for (const firstActionIndex of options.firstActions) {
           for (const secondActionIndex of options.secondActions) {
+            if (completedRows >= options.maxCombinations) {
+              truncated = true;
+              break sequenceRows;
+            }
             rows.push(runOne(options, team, weights, {
               start,
               firstDuration,
@@ -98,6 +119,7 @@ function runSequenceProbe(options: SequenceProbeOptions): {
               firstActionIndex,
               secondActionIndex
             }, startState));
+            completedRows += 1;
           }
         }
       }
@@ -107,7 +129,10 @@ function runSequenceProbe(options: SequenceProbeOptions): {
   rows.sort((left, right) => right.score - left.score);
   return {
     baseline,
-    rows: rows.slice(0, options.limit)
+    rows: rows.slice(0, options.limit),
+    plannedRows,
+    completedRows,
+    truncated
   };
 }
 
