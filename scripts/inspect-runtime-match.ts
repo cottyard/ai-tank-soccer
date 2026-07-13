@@ -22,6 +22,7 @@ type InspectOptions = {
   frames: number;
   from: number;
   rolloutFrames: number[];
+  continuationFrames: number[];
   rolloutBreakdown: boolean;
 };
 
@@ -38,6 +39,7 @@ export function parseInspectRuntimeMatchArgs(argv: readonly string[]): InspectOp
     frames: positiveIntegerArg(argv, '--frames', 600),
     from: integerArg(argv, '--from', 360),
     rolloutFrames: numberListArg(argv, '--rollout-frames', []),
+    continuationFrames: numberListArg(argv, '--continuation-frames', []),
     rolloutBreakdown: argv.includes('--rollout-breakdown')
   };
 }
@@ -88,7 +90,15 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       if (!sampled) {
         continue;
       }
-      console.log(JSON.stringify(inspectDecision(sampled, team, trace, options.rolloutFrames, options.rolloutBreakdown)));
+      console.log(JSON.stringify(inspectDecision(
+        sampled,
+        team,
+        trace,
+        options.rolloutFrames,
+        options.continuationFrames,
+        weights,
+        options.rolloutBreakdown
+      )));
     }
   } catch (error) {
     process.exitCode = 1;
@@ -101,6 +111,8 @@ function inspectDecision(
   team: Team,
   trace: NeuralDecisionTrace,
   rolloutFrames: readonly number[],
+  continuationFrames: readonly number[],
+  weights: number[],
   rolloutBreakdown: boolean
 ): Record<string, unknown> {
   const tank = controlledTank(state, team);
@@ -143,6 +155,9 @@ function inspectDecision(
         }
         return row;
       });
+  const policyContinuations = continuationFrames.length === 0
+    ? undefined
+    : continuationFrames.map((frames) => inspectPolicyContinuation(state, team, weights, frames));
 
   return {
     frame: trace.frame,
@@ -194,7 +209,57 @@ function inspectDecision(
           actionScores: counterfactualTactical.actionScores.map((value) => Number.isFinite(value) ? round(value) : null)
         }
       : undefined,
-    fixedRollouts
+    fixedRollouts,
+    policyContinuations
+  };
+}
+
+export function inspectPolicyContinuation(
+  state: GameState,
+  team: Team,
+  weights: number[],
+  frames: number
+): Record<string, unknown> {
+  const simulated = cloneState(state);
+  const startFrame = simulated.frame;
+  const initialGoalsFor = goalsFor(simulated, team);
+  const initialGoalsAgainst = goalsAgainst(simulated, team);
+  const neural = createNeuralStrategy({
+    weights,
+    tacticalRollout: true
+  });
+  const clock = new AiClock(
+    team === 'red' ? neural : traditionalStrategy,
+    team === 'blue' ? neural : traditionalStrategy,
+    PHYSICS_HZ,
+    AI_HZ
+  );
+  let firstGoalFrame: number | undefined;
+  let firstGoalFor: boolean | undefined;
+
+  for (let frame = 0; frame < frames; frame += 1) {
+    stepGame(simulated, clock.update(simulated), FIXED_DT);
+    if (simulated.lastGoal && firstGoalFrame === undefined) {
+      firstGoalFrame = simulated.lastGoal.frame;
+      firstGoalFor = simulated.lastGoal.team === team;
+    }
+  }
+
+  const sign = team === 'red' ? 1 : -1;
+  return {
+    frames,
+    goalsForDelta: goalsFor(simulated, team) - initialGoalsFor,
+    goalsAgainstDelta: goalsAgainst(simulated, team) - initialGoalsAgainst,
+    firstGoalFrame,
+    firstGoalOffset: firstGoalFrame === undefined ? undefined : firstGoalFrame - startFrame,
+    firstGoalFor,
+    finalBall: roundPoint(simulated.ball.position),
+    finalAttackX: round(attackX(team, simulated.ball.position.x)),
+    finalLane: round(goalLaneScore(simulated.ball.position.y)),
+    finalSideWallDistance: round(sideWallDistance(simulated.ball.position.y)),
+    finalBallSpeed: round(Math.hypot(simulated.ball.velocity.x, simulated.ball.velocity.y)),
+    finalAttackVelocity: round(simulated.ball.velocity.x * sign),
+    finalAttackLateralVelocity: round(simulated.ball.velocity.y * sign)
   };
 }
 
@@ -282,6 +347,14 @@ function fieldVector(team: Team, attackFrameX: number, attackFrameY: number): Ve
 
 function attackX(team: Team, fieldX: number): number {
   return team === 'red' ? fieldX : FIELD.length - fieldX;
+}
+
+function goalsFor(state: Readonly<GameState>, team: Team): number {
+  return team === 'red' ? state.score.red : state.score.blue;
+}
+
+function goalsAgainst(state: Readonly<GameState>, team: Team): number {
+  return team === 'red' ? state.score.blue : state.score.red;
 }
 
 function sideWallDistance(y: number): number {

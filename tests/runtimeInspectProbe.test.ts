@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { FIELD, createInitialState, type GameState } from '../src/game/model';
-import { inspectFixedActionOutcome, parseInspectRuntimeMatchArgs } from '../scripts/inspect-runtime-match';
+import { defaultNeuralWeights } from '../src/ai/neuralWeights';
+import {
+  inspectFixedActionOutcome,
+  inspectPolicyContinuation,
+  parseInspectRuntimeMatchArgs
+} from '../scripts/inspect-runtime-match';
 
 describe('runtime inspect probe', () => {
   it('parses rollout breakdown diagnostics', () => {
@@ -14,12 +19,16 @@ describe('runtime inspect probe', () => {
       '--rollout-frames',
       '18',
       '36',
+      '--continuation-frames',
+      '36',
+      '72',
       '--rollout-breakdown'
     ])).toMatchObject({
       seed: 71,
       match: 3,
       from: 528,
       rolloutFrames: [18, 36],
+      continuationFrames: [36, 72],
       rolloutBreakdown: true
     });
   });
@@ -38,6 +47,19 @@ describe('runtime inspect probe', () => {
     expect(Number.isFinite(result.score as number)).toBe(true);
     expect(Number.isFinite(delta.finishThreat)).toBe(true);
     expect(Number.isFinite(after.shotLane)).toBe(true);
+  });
+
+  it('reports runtime policy continuation outcomes from an inspected state', () => {
+    const state = createDirectFinishState();
+
+    const result = inspectPolicyContinuation(state, 'red', defaultNeuralWeights(), 12);
+
+    expect(result).toMatchObject({
+      frames: 12
+    });
+    expect(Number.isFinite(result.goalsForDelta as number)).toBe(true);
+    expect(Number.isFinite(result.finalAttackX as number)).toBe(true);
+    expect(Number.isFinite(result.finalLane as number)).toBe(true);
   });
 });
 
