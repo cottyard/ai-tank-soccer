@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { loadWeightsPayload } from './coach-neural';
 import { createNeuralStrategy, type NeuralDecisionTrace } from '../src/ai/neuralStrategy';
 import { chooseTacticalAction } from '../src/ai/tacticalRollout';
+import { evaluatePosition, evaluatePositionDelta } from '../src/ai/positionEvaluation';
+import { actionIndexToCommand } from '../src/ai/policyActions';
 import { traditionalStrategy } from '../src/ai/traditionalStrategy';
 import { AI_HZ, FIXED_DT, PHYSICS_HZ } from '../src/game/match';
 import { FIELD, cloneState, createInitialState, type GameState, type Team, type Vec2 } from '../src/game/model';
@@ -20,6 +22,7 @@ type InspectOptions = {
   frames: number;
   from: number;
   rolloutFrames: number[];
+  rolloutBreakdown: boolean;
 };
 
 type RoundedPoint = {
@@ -34,7 +37,8 @@ export function parseInspectRuntimeMatchArgs(argv: readonly string[]): InspectOp
     match: integerArg(argv, '--match', 3),
     frames: positiveIntegerArg(argv, '--frames', 600),
     from: integerArg(argv, '--from', 360),
-    rolloutFrames: numberListArg(argv, '--rollout-frames', [])
+    rolloutFrames: numberListArg(argv, '--rollout-frames', []),
+    rolloutBreakdown: argv.includes('--rollout-breakdown')
   };
 }
 
@@ -84,7 +88,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       if (!sampled) {
         continue;
       }
-      console.log(JSON.stringify(inspectDecision(sampled, team, trace, options.rolloutFrames)));
+      console.log(JSON.stringify(inspectDecision(sampled, team, trace, options.rolloutFrames, options.rolloutBreakdown)));
     }
   } catch (error) {
     process.exitCode = 1;
@@ -96,7 +100,8 @@ function inspectDecision(
   state: GameState,
   team: Team,
   trace: NeuralDecisionTrace,
-  rolloutFrames: readonly number[]
+  rolloutFrames: readonly number[],
+  rolloutBreakdown: boolean
 ): Record<string, unknown> {
   const tank = controlledTank(state, team);
   const opponent = controlledTank(state, team === 'red' ? 'blue' : 'red');
@@ -121,13 +126,22 @@ function inspectDecision(
           policyActionIndex: trace.rawPolicyActionIndex ?? 4,
           rolloutFrames: frames
         });
-        return {
+        const row: Record<string, unknown> = {
           frames,
           actionIndex: choice.actionIndex,
           policyScore: round(choice.policyScore),
           score: round(choice.score),
           actionScores: choice.actionScores.map((value) => Number.isFinite(value) ? round(value) : null)
         };
+        if (rolloutBreakdown) {
+          row.breakdown = {
+            policy: inspectFixedActionOutcome(state, team, trace.rawPolicyActionIndex ?? 4, frames),
+            choice: choice.actionIndex === trace.rawPolicyActionIndex
+              ? undefined
+              : inspectFixedActionOutcome(state, team, choice.actionIndex, frames)
+          };
+        }
+        return row;
       });
 
   return {
@@ -184,6 +198,48 @@ function inspectDecision(
   };
 }
 
+export function inspectFixedActionOutcome(
+  state: GameState,
+  team: Team,
+  actionIndex: number,
+  frames: number
+): Record<string, unknown> {
+  const simulated = cloneState(state);
+  const controlled = controlledTank(simulated, team);
+  if (!controlled) {
+    return { actionIndex, frames, missingTank: true };
+  }
+
+  const before = evaluatePosition(simulated, team);
+  const commands = {
+    [controlled.id]: actionIndexToCommand(actionIndex)
+  };
+  for (let frame = 0; frame < frames; frame += 1) {
+    stepGame(simulated, commands, FIXED_DT);
+  }
+
+  const after = evaluatePosition(simulated, team);
+  const delta = evaluatePositionDelta(simulated, state, team);
+  const action = actionIndexToCommand(actionIndex);
+  const trackCost = Math.abs(action.leftTrack) + Math.abs(action.rightTrack);
+  const sign = team === 'red' ? 1 : -1;
+  return {
+    actionIndex,
+    frames,
+    score: round(after.total - before.total + delta.breakdown.cornerEscape * 0.45 - trackCost * 0.004),
+    beforeTotal: round(before.total),
+    afterTotal: round(after.total),
+    deltaTotal: round(delta.total),
+    ball: roundPoint(simulated.ball.position),
+    attackX: round(attackX(team, simulated.ball.position.x)),
+    lane: round(goalLaneScore(simulated.ball.position.y)),
+    attackVelocity: round(simulated.ball.velocity.x * sign),
+    attackLateralVelocity: round(simulated.ball.velocity.y * sign),
+    delta: roundBreakdown(delta.breakdown),
+    after: roundBreakdown(after.breakdown)
+  };
+}
+
 function createSeededInitialState(seed: number, match: number, team: Team): GameState {
   const random = createSeededRandom(seed + match * 4099);
   const state = createInitialState();
@@ -230,6 +286,10 @@ function attackX(team: Team, fieldX: number): number {
 
 function sideWallDistance(y: number): number {
   return Math.min(y - FIELD.ballRadius, FIELD.width - FIELD.ballRadius - y);
+}
+
+function goalLaneScore(y: number): number {
+  return 1 - clamp01(Math.abs(y - FIELD.width / 2) / (FIELD.goalMouth * 0.72));
 }
 
 function stringArg(argv: readonly string[], name: string): string | undefined {
@@ -289,6 +349,12 @@ function roundPoint(point: Vec2): RoundedPoint {
     x: round(point.x),
     y: round(point.y)
   };
+}
+
+function roundBreakdown(value: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, round(entry)])
+  );
 }
 
 function clamp01(value: number): number {
