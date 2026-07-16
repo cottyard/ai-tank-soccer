@@ -511,7 +511,7 @@ function shouldPreserveCriticalRollingFinishPush(
   if (
     attackBallX < FIELD.length - 275 ||
     attackBallX > FIELD.length - 240 ||
-    attackBallY < 0 ||
+    attackBallY < -12 ||
     lane < 0.94
   ) {
     return false;
