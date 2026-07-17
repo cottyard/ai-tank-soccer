@@ -184,24 +184,24 @@ Updated gate comparison from the previous accepted `0.900` baseline:
 
 | Gate | Previous Accepted | Current |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.625`, `avgWin=0.925`, `avgBp=0.188` |
-| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `20-0`, `avgScore=594.742`, `avgWin=0.900`, `avgBp=0.178` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=568.181`, `avgWin=0.925`, `avgBp=0.169` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `20-0`, `avgScore=594.931`, `avgWin=0.925`, `avgBp=0.166` |
 
 Per-seed current standard gate:
 
-- `19`: `5-0`, score `735.044`, win `1.000`, ball progress `0.188`.
-- `31`: `3-0`, score `467.847`, win `0.875`, ball progress `0.293`.
-- `43`: `4-0`, score `603.861`, win `1.000`, ball progress `0.236`.
+- `19`: `5-0`, score `735.854`, win `1.000`, ball progress `0.198`.
+- `31`: `3-0`, score `460.352`, win `0.875`, ball progress `0.200`.
+- `43`: `4-0`, score `604.065`, win `1.000`, ball progress `0.238`.
 - `57`: `4-0`, score `583.429`, win `1.000`, ball progress `-0.020`.
-- `71`: `3-0`, score `457.945`, win `0.750`, ball progress `0.240`.
+- `71`: `3-0`, score `457.204`, win `0.750`, ball progress `0.231`.
 
 Per-seed current holdout gate:
 
-- `83`: `4-0`, score `595.823`, win `1.000`, ball progress `0.135`.
-- `97`: `2-0`, score `309.248`, win `0.750`, ball progress `0.069`.
-- `109`: `3-0`, score `457.730`, win `0.750`, ball progress `0.237`.
-- `127`: `6-0`, score `878.000`, win `1.000`, ball progress `0.287`.
-- `149`: `5-0`, score `732.910`, win `1.000`, ball progress `0.161`.
+- `83`: `4-0`, score `600.117`, win `1.000`, ball progress `0.189`.
+- `97`: `3-0`, score `440.666`, win `0.875`, ball progress `-0.046`.
+- `109`: `3-0`, score `458.536`, win `0.750`, ball progress `0.247`.
+- `127`: `6-0`, score `878.049`, win `1.000`, ball progress `0.288`.
+- `149`: `4-0`, score `597.288`, win `1.000`, ball progress `0.154`.
 
 Current remaining standard draws are still `31:0`, `71:0`, and `71:3`. The accepted fast-centering rollout improves `71:3` threat quality, moving the final ball from the deep side-wall finish (`attackX=917.474`, side-wall distance `69.122`) to a less pinned attacking state (`attackX=944.054`, side-wall distance `181.948`), but it does not convert the match. The next practical target remains `71:3`, now as a follow-up/continuation search problem after the centering release. Treat `71:0` separately as a midfield/low-finish recovery problem, and avoid direct low-stamina loose-ball drive exceptions unless they survive own-goal safety checks.
 
@@ -211,7 +211,8 @@ Decision: keep the offset rolling finish wait and fast-centering finish rollout 
 
 Accepted addition:
 
-1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass. Standard gate is unchanged at `avgWin=0.925`; holdout improved from `avgWin=0.875` to `avgWin=0.900` with seed `149` converting from `4-0` to `5-0`.
+1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass.
+2. Fixed steering direction in `regulateCriticalStaminaCommand`: when the ball is nearly straight ahead (`|local.lateral| < tankRadius * 0.18`) and the regulation reduces a two-track command to single-track, the code previously always dropped the right track (turning right), which was wrong when the ball was slightly to the left. Now chooses which track to drop based on the ball's lateral position. This converted holdout seed `97` from `2-0` to `3-0` (`win=0.750` → `0.875`).
 
 Rejected during this continuation:
 
@@ -225,7 +226,7 @@ Diagnostic findings from detailed inspection of all three remaining standard dra
 - `71:0`: The neural policy consistently chooses action `5` (turn left) in midfield when action `7`/`8` (turn right / full forward) would be dramatically better (counterfactual scores `0.1`-`0.39` vs `-0.27` to `0.02`). Tactical rollout is NOT used because no `shouldUseTacticalRollout` conditions trigger for midfield balls. However, enabling rollout for midfield was catastrophic across three different experiments (broad trigger, high margin, safety override) because the position evaluator does not value midfield play correctly. This is a neural policy quality problem that requires either retraining or a midfield-specific evaluator.
 - `71:3`: Ball drifts rapidly toward the side wall (lateral velocity `29`-`83` px/frame, lane deteriorates `0.767` → `0.349`) while `shouldWaitForOffsetRollingFinish` triggers. Even when the wait is suppressed, the AI cannot redirect the ball. Confirmed as a rollout-evaluator continuation valuation problem, not an action-guard problem.
 
-Decision: keep the `attackBallY` threshold relaxation. Standard gate is unchanged at `avgWin=0.925` with slight score improvement; holdout improved from `avgWin=0.875` to `avgWin=0.900` with `+1` goal on seed `149`. The remaining standard draws (`31:0`, `71:0`, `71:3`) are blocked by architectural limitations: the position evaluator's midfield misalignment, the neural policy's midfield quality, and the opponent-blocking contact model. Further progress on these draws requires deeper changes than heuristic threshold adjustments.
+Decision: keep both accepted changes. Standard gate is unchanged at `avgWin=0.925`; holdout improved from `avgWin=0.875` to `avgWin=0.925` across the two changes (+5.7% relative improvement). The remaining standard draws (`31:0`, `71:0`, `71:3`) are blocked by architectural limitations: the position evaluator's midfield misalignment, the neural policy's midfield quality, and the opponent-blocking contact model. Further progress on these draws requires deeper changes than heuristic threshold adjustments.
 
 2026-07-11 follow-up diagnostics from the accepted `avgWin=0.925` HL baseline:
 
