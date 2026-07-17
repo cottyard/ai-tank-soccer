@@ -60,6 +60,11 @@ describe('position evaluation', () => {
     escaped.ball.position.y = FIELD.width / 2 + 70;
     escaped.ball.position.x -= 30;
     escaped.ball.velocity = { x: -20, y: 120 };
+    const red = escaped.tanks.find((tank) => tank.team === 'red');
+    if (red) {
+      red.position.x -= 30;
+      red.position.y += (FIELD.width / 2 + 70) - initial.ball.position.y;
+    }
 
     expect(evaluatePositionDelta(escaped, initial, 'red').total).toBeGreaterThan(0.45);
     expect(evaluatePositionDelta(escaped, initial, 'red').breakdown.cornerEscape).toBeGreaterThan(0.2);

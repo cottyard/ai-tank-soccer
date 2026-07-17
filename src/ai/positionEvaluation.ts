@@ -79,7 +79,7 @@ export function evaluatePositionDelta(
     shotLane: after.breakdown.shotLane - before.breakdown.shotLane,
     finishThreat: after.breakdown.finishThreat - before.breakdown.finishThreat,
     shotVelocity: after.breakdown.shotVelocity - before.breakdown.shotVelocity,
-    contest: Math.max(0, after.breakdown.contest - before.breakdown.contest),
+    contest: after.breakdown.contest - before.breakdown.contest,
     possession: after.breakdown.possession - before.breakdown.possession,
     ownDanger: after.breakdown.ownDanger - before.breakdown.ownDanger,
     cornerEscape,
