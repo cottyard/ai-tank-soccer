@@ -184,15 +184,15 @@ Updated gate comparison from the previous accepted `0.900` baseline:
 
 | Gate | Previous Accepted | Current |
 | --- | ---: | ---: |
-| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.547`, `avgWin=0.925`, `avgBp=0.187` |
-| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `19-0`, `avgScore=568.033`, `avgWin=0.875`, `avgBp=0.196` |
+| Standard `[19,31,43,57,71]`, `matches=4`, `frames=600` | goals `17-0`, `avgScore=517.609`, `avgWin=0.900`, `avgBp=0.226` | goals `19-0`, `avgScore=569.625`, `avgWin=0.925`, `avgBp=0.188` |
+| Holdout `[83,97,109,127,149]`, `matches=4`, `frames=600` | goals `19-0`, `avgScore=567.751`, `avgWin=0.875`, `avgBp=0.192` | goals `20-0`, `avgScore=594.742`, `avgWin=0.900`, `avgBp=0.178` |
 
 Per-seed current standard gate:
 
 - `19`: `5-0`, score `735.044`, win `1.000`, ball progress `0.188`.
-- `31`: `3-0`, score `467.952`, win `0.875`, ball progress `0.295`.
-- `43`: `4-0`, score `603.637`, win `1.000`, ball progress `0.233`.
-- `57`: `4-0`, score `583.157`, win `1.000`, ball progress `-0.023`.
+- `31`: `3-0`, score `467.847`, win `0.875`, ball progress `0.293`.
+- `43`: `4-0`, score `603.861`, win `1.000`, ball progress `0.236`.
+- `57`: `4-0`, score `583.429`, win `1.000`, ball progress `-0.020`.
 - `71`: `3-0`, score `457.945`, win `0.750`, ball progress `0.240`.
 
 Per-seed current holdout gate:
@@ -201,11 +201,30 @@ Per-seed current holdout gate:
 - `97`: `2-0`, score `309.248`, win `0.750`, ball progress `0.069`.
 - `109`: `3-0`, score `457.730`, win `0.750`, ball progress `0.237`.
 - `127`: `6-0`, score `878.000`, win `1.000`, ball progress `0.287`.
-- `149`: `4-0`, score `599.365`, win `0.875`, ball progress `0.250`.
+- `149`: `5-0`, score `732.910`, win `1.000`, ball progress `0.161`.
 
 Current remaining standard draws are still `31:0`, `71:0`, and `71:3`. The accepted fast-centering rollout improves `71:3` threat quality, moving the final ball from the deep side-wall finish (`attackX=917.474`, side-wall distance `69.122`) to a less pinned attacking state (`attackX=944.054`, side-wall distance `181.948`), but it does not convert the match. The next practical target remains `71:3`, now as a follow-up/continuation search problem after the centering release. Treat `71:0` separately as a midfield/low-finish recovery problem, and avoid direct low-stamina loose-ball drive exceptions unless they survive own-goal safety checks.
 
 Decision: keep the offset rolling finish wait and fast-centering finish rollout if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and the latest rollout addition gives a small standard score/ball-progress gain over the prior accepted `0.925` state while holdout remains safe at `19-0`.
+
+2026-07-16 continuation from the accepted `avgWin=0.925` HL baseline:
+
+Accepted addition:
+
+1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass. Standard gate is unchanged at `avgWin=0.925`; holdout improved from `avgWin=0.875` to `avgWin=0.900` with seed `149` converting from `4-0` to `5-0`.
+
+Rejected during this continuation:
+
+- A lateral-drift guard in `shouldWaitForOffsetRollingFinish` (suppress wait when `attackBallY * attackLateralVelocity > 0 && |attackLateralVelocity| > 25`) was too broad: it regressed seeds `19` (`5-0` → `4-0`) and `43` (`4-0` → `3-0`) without improving `71`. The offset rolling finish wait is protecting conversions in `19` and `43` even when lateral drift is present. Do not narrow this wait condition based on lateral velocity alone.
+- Enabling tactical rollout for midfield contested balls (within `tankRadius * 2.2` and middle 60% of field) caused catastrophic regression: standard dropped from `avgWin=0.925` to `0.775`, every seed lost goals. The 18-frame rollout makes worse midfield decisions than the neural policy's learned long-horizon strategies. Do not enable tactical rollout broadly in midfield.
+
+Diagnostic findings from detailed inspection of all three remaining standard draws:
+
+- `31:0`: The opponent maintains exactly ~99px from the ball throughout the entire match (constant contact), parked near the goal and blocking the scoring path. Critical stamina regulation converts full-forward to single-track turns during the crucial approach phase (frames `414`-`456`). The ball stalls at zero speed for 30+ frames while both tanks recover stamina. This is fundamentally a contact/sequence model problem: the AI needs to push around a blocking opponent, not through it.
+- `71:0`: The neural policy consistently chooses action `5` (turn left) in midfield when action `7`/`8` (turn right / full forward) would be dramatically better (counterfactual scores `0.1`-`0.39` vs `-0.27` to `0.02`). Tactical rollout is NOT used because no `shouldUseTacticalRollout` conditions trigger for midfield balls. However, enabling rollout for midfield was catastrophic because the 18-frame rollout is too short-sighted for general midfield play. This is a neural policy quality problem.
+- `71:3`: Ball drifts rapidly toward the side wall (lateral velocity `29`-`83` px/frame, lane deteriorates `0.767` → `0.349`) while `shouldWaitForOffsetRollingFinish` triggers. Even when the wait is suppressed, the AI cannot redirect the ball. Confirmed as a rollout-evaluator continuation valuation problem, not an action-guard problem.
+
+Decision: keep the `attackBallY` threshold relaxation. Standard gate is unchanged at `avgWin=0.925` with slight score improvement; holdout improved from `avgWin=0.875` to `avgWin=0.900` with `+1` goal on seed `149`.
 
 2026-07-11 follow-up diagnostics from the accepted `avgWin=0.925` HL baseline:
 
