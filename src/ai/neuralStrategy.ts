@@ -295,7 +295,7 @@ function shouldWaitForDriftingFinish(
 
   const attackVelocity = state.ball.velocity.x * sign;
   const ballSpeed = Math.hypot(state.ball.velocity.x, state.ball.velocity.y);
-  if (attackVelocity < -10 || ballSpeed > 70) {
+  if (attackVelocity < -10 || ballSpeed > 70 || ballSpeed < 3) {
     return false;
   }
 

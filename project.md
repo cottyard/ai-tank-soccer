@@ -209,10 +209,11 @@ Decision: keep the offset rolling finish wait and fast-centering finish rollout 
 
 2026-07-16 continuation from the accepted `avgWin=0.925` HL baseline:
 
-Accepted addition:
+Accepted additions:
 
 1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass.
 2. Fixed steering direction in `regulateCriticalStaminaCommand`: when the ball is nearly straight ahead (`|local.lateral| < tankRadius * 0.18`) and the regulation reduces a two-track command to single-track, the code previously always dropped the right track (turning right), which was wrong when the ball was slightly to the left. Now chooses which track to drop based on the ball's lateral position. This converted holdout seed `97` from `2-0` to `3-0` (`win=0.750` → `0.875`).
+3. Added a minimum ball speed check (`ballSpeed >= 3`) to `shouldWaitForDriftingFinish`. Previously, the AI would wait indefinitely for a "drifting finish" even if the ball was effectively stationary in the deep finish zone (observed in seed `31:0` at frame `558` where ball speed was `1.374`). Gate confirmed completely safe (identical `0.925` / `0.925`).
 
 Rejected during this continuation:
 
