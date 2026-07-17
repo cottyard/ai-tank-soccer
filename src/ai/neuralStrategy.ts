@@ -478,9 +478,12 @@ function regulateCriticalStaminaCommand(
 
   const local = targetInTankFrame(tank, team, state.ball.position);
   if (Math.abs(local.lateral) < FIELD.tankRadius * 0.18) {
-    return command.leftTrack === command.rightTrack
-      ? { leftTrack: command.leftTrack, rightTrack: 0 }
-      : STOP_COMMAND;
+    if (command.leftTrack === command.rightTrack) {
+      return local.lateral >= 0
+        ? { leftTrack: command.leftTrack, rightTrack: 0 }
+        : { leftTrack: 0, rightTrack: command.rightTrack };
+    }
+    return STOP_COMMAND;
   }
 
   const turnTowardBall = local.lateral > 0 ? 1 : -1;
