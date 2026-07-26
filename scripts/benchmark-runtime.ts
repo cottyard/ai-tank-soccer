@@ -245,6 +245,8 @@ export function parsePolicySpec(value: string): BenchmarkPolicySpec {
       tuning.improvementMargin = parsed;
     } else if (key === 'force') {
       tuning.forceTrigger = parsed !== 0;
+    } else if (key === 'opp') {
+      tuning.opponentModel = parsed !== 0 ? 'policy' : 'stop';
     } else {
       throw new Error(`Unknown tuning key "${key}" in policy spec: ${value}`);
     }

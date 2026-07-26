@@ -66,23 +66,29 @@ let hullMaxY = 0;
  * Two-entry angle cache. A hit returns exactly the value `Math.cos`/`Math.sin`
  * would return for the same angle, so results are unchanged; it only removes the
  * thousands of duplicate trig calls the per-vertex transform used to make.
+ *
+ * Keyed with `Object.is` rather than `===` so that `-0` cannot borrow `+0`'s
+ * entry: `Math.sin(-0)` is `-0` while `Math.sin(0)` is `+0`. Tank angles from
+ * `normalizeAngle` are never `-0`, but `Math.atan2` (used to seed training
+ * states) and deserialised replays can produce one. The seed values are `NaN` so
+ * that an `Object.is` hit on a `NaN` angle also returns `NaN`, matching `Math.cos`.
  */
 let trigAngle0 = Number.NaN;
-let trigCos0 = 0;
-let trigSin0 = 0;
+let trigCos0 = Number.NaN;
+let trigSin0 = Number.NaN;
 let trigAngle1 = Number.NaN;
-let trigCos1 = 0;
-let trigSin1 = 0;
+let trigCos1 = Number.NaN;
+let trigSin1 = Number.NaN;
 let trigCos = 0;
 let trigSin = 0;
 
 function loadTrig(angle: number): void {
-  if (angle === trigAngle0) {
+  if (Object.is(angle, trigAngle0)) {
     trigCos = trigCos0;
     trigSin = trigSin0;
     return;
   }
-  if (angle === trigAngle1) {
+  if (Object.is(angle, trigAngle1)) {
     trigCos = trigCos1;
     trigSin = trigSin1;
     return;

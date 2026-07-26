@@ -332,12 +332,17 @@ Results, opponent = accepted runtime unless stated, mirror control exactly `0.5`
 | The legacy gate reports true strength | Gate says `avgWin=0.925` on its five tuned seeds; 400 fresh scenarios say `0.7331` | Gate overstates by ~`0.19` |
 | Deeper search helps | `frames=36` scored `0.5212`, CI `[0.5026,0.5399]` over 200 scenarios, then `0.5095`, CI `[0.4978,0.5212]` over 500 independent scenarios | Did not replicate; winner's curse |
 | Search should run more often | `force=1` scored `0.4738`, goals `62-83`; with margin `0.12`, `0.4725`, goals `59-81` | Actively harmful |
+| Rollout's frozen opponent is the flaw | Modelling the opponent as the same network re-deciding at 5Hz scored `0.5075`, CI `[0.4919,0.5231]`, goals `156-148` over 600 matches | No measurable gain |
+
+The opponent-model result is worth recording because the flaw is real: rollout passes commands only for the controlled tank, so `sanitizeCommand` hands the opponent a full stop and the search plans against a stationary opponent for up to 120 frames. Replacing that with a reacting opponent is a strictly better world model and still bought nothing measurable, which is strong evidence that the limiting error is in the terminal valuation rather than in the transition model.
 
 The depth result is the important process lesson. Three variants were screened, the best cleared a naive 95% interval, and it evaporated on fresh seeds. The old 20-match gate had no way to detect that and would have accepted it, which is the most likely explanation for several narrow constants already in this file.
 
 The trigger result independently confirms the earlier midfield finding, previously supported only by 20-match anecdotes, and now with real error bars: expanding tactical rollout beyond its trigger loses.
 
-Conclusion: search depth and trigger coverage are both saturated. More search against the current objective loses, which means the hand-weighted linear position evaluator in `src/ai/positionEvaluation.ts` is the binding constraint on AI strength. The next real gain has to come from a better value function, not from another guarded rule or horizon constant.
+Conclusion: search depth, trigger coverage, and the rollout's opponent model are all saturated. Three independent improvements to the search — deeper, wider, and with a better transition model — produced no replicable gain, and one produced a loss. That points at the terminal valuation, so the hand-weighted linear position evaluator in `src/ai/positionEvaluation.ts` is the binding constraint on AI strength. The next real gain has to come from a better value function, not from another guarded rule or horizon constant.
+
+The physics rewrite was independently verified by differential testing against the pre-rewrite kernel: `4358000` frame comparisons over `1874060` distinct random initial states, comparing every float of `GameState` bit-for-bit, with zero divergence. Coverage included overlapping and exactly-touching hulls, corner jams, balls on wall and goal-mouth boundaries, zero and extreme velocities, zero stamina, and guard-band-marginal placements. Mutation testing confirmed the harness can fail: a pure re-association of one transform (`a + b*c - d*e` to `a + (b*c - d*e)`, a one-ULP change) was caught in `34%` of trials, and refreshing collision geometry inside the part loop in `23%`. One fragility was found and fixed: the angle cache now keys on `Object.is` so a `-0` angle cannot borrow `+0`'s entry, since `Math.sin(-0)` is `-0`. Tank angles from `normalizeAngle` are never `-0`, but `Math.atan2` in `selfPlayTraining` and deserialised replays can produce one. The fix is a verified semantic no-op on reachable states.
 
 ## Architecture
 

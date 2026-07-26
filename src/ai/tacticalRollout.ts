@@ -1,4 +1,4 @@
-import { FIXED_DT } from '../game/match';
+import { AI_HZ, FIXED_DT, PHYSICS_HZ } from '../game/match';
 import { FIELD, cloneState, type GameState, type Tank, type Team } from '../game/model';
 import { stepGame } from '../game/simulation';
 import type { CommandMap } from '../game/strategy';
@@ -29,7 +29,17 @@ export type TacticalRolloutTuning = {
    * heuristic can be measured as a hypothesis instead of assumed.
    */
   forceTrigger?: boolean;
+  /**
+   * How the opponent behaves inside a rollout. The historical model is `stop`:
+   * only the controlled tank receives a command, so `sanitizeCommand` hands the
+   * opponent a full stop and the search plans against a statue for up to 120
+   * frames. `policy` re-decides the opponent with the same network at the real
+   * 5Hz cadence instead.
+   */
+  opponentModel?: 'stop' | 'policy';
 };
+
+export type TacticalOpponentPolicy = (state: Readonly<GameState>, team: Team) => number;
 
 export type TacticalActionOptions = {
   state: Readonly<GameState>;
@@ -39,6 +49,7 @@ export type TacticalActionOptions = {
   rolloutFrames?: number;
   improvementMargin?: number;
   tuning?: TacticalRolloutTuning;
+  opponentPolicy?: TacticalOpponentPolicy;
 };
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
@@ -50,6 +61,14 @@ const ATTACK_STALL_SEQUENCE_SECOND_FRAMES = 66;
 const CENTRAL_FINISH_SEQUENCE_FIRST_FRAMES = 6;
 const CENTRAL_FINISH_SEQUENCE_SECOND_FRAMES = 54;
 const DEFAULT_IMPROVEMENT_MARGIN = 0.018;
+const AI_FRAMES_PER_DECISION = Math.max(1, Math.round(PHYSICS_HZ / AI_HZ));
+
+/** Only model a reacting opponent when a policy is supplied and asked for. */
+function activeOpponentPolicy(
+  options: Pick<TacticalActionOptions, 'tuning' | 'opponentPolicy'>
+): TacticalOpponentPolicy | undefined {
+  return options.tuning?.opponentModel === 'policy' ? options.opponentPolicy : undefined;
+}
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
   const rolloutFrames = Math.max(1, Math.floor(options.rolloutFrames ?? defaultRolloutFrames(options)));
@@ -149,7 +168,11 @@ function scoreTacticalAction(options: ScoreOptions): number {
   }
 
   const before = evaluatePosition(simulated, options.team).total;
+  const opponentPolicy = activeOpponentPolicy(options);
   for (let frame = 0; frame < options.rolloutFrames; frame += 1) {
+    if (opponent && opponentPolicy && simulated.frame % AI_FRAMES_PER_DECISION === 0) {
+      commands[opponent.id] = actionIndexToCommand(opponentPolicy(simulated, opponentTeam));
+    }
     stepGame(simulated, commands, FIXED_DT);
   }
 
@@ -211,11 +234,19 @@ function scoreTacticalActionSequencePair(
     followupCommands[opponent.id] = opponentCommand;
   }
 
+  const opponentPolicy = activeOpponentPolicy(options);
+  const stepWithOpponent = (commands: CommandMap): void => {
+    if (opponent && opponentPolicy && simulated.frame % AI_FRAMES_PER_DECISION === 0) {
+      commands[opponent.id] = actionIndexToCommand(opponentPolicy(simulated, opponentTeam));
+    }
+    stepGame(simulated, commands, FIXED_DT);
+  };
+
   for (let frame = 0; frame < options.sequenceProfile.firstFrames; frame += 1) {
-    stepGame(simulated, firstCommands, FIXED_DT);
+    stepWithOpponent(firstCommands);
   }
   for (let frame = 0; frame < options.sequenceProfile.secondFrames; frame += 1) {
-    stepGame(simulated, followupCommands, FIXED_DT);
+    stepWithOpponent(followupCommands);
   }
 
   const after = evaluatePosition(simulated, options.team).total;

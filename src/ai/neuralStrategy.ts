@@ -10,7 +10,11 @@ import {
   defaultNeuralWeights,
   type NeuralWeights
 } from './neuralWeights';
-import { chooseTacticalAction, type TacticalRolloutTuning } from './tacticalRollout';
+import {
+  chooseTacticalAction,
+  type TacticalOpponentPolicy,
+  type TacticalRolloutTuning
+} from './tacticalRollout';
 
 const STAMINA_CONSERVE_RATIO = 0.58;
 const CRITICAL_STAMINA_RATIO = 0.22;
@@ -77,6 +81,20 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
           return () => fixedWeights;
         })();
 
+  // Models the opponent inside a rollout as the same network deciding for its
+  // own team, which is a far better prior than the historical frozen opponent.
+  const rolloutOpponentPolicy: TacticalOpponentPolicy = (state, team) => {
+    const tank = state.tanks.find(
+      (candidate) => candidate.team === team && candidate.index === 0
+    );
+    if (!tank) {
+      return 4;
+    }
+    return policyArgmaxActionIndex(
+      evaluateTankNetwork(state, team, tank, resolveWeights())
+    ) ?? 4;
+  };
+
   return {
     name: options.name ?? 'neural-policy',
     decide(state, team): CommandMap {
@@ -109,7 +127,8 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
           tacticalRollout &&
             (options.tacticalTuning?.forceTrigger === true ||
               shouldUseTacticalRollout(state, team, tank, pressures)),
-          options.tacticalTuning
+          options.tacticalTuning,
+          rolloutOpponentPolicy
         );
       const command = decision.command;
       const regulatedCommand = regulateCriticalStaminaCommand(state, team, tank, pressures, command);
@@ -775,7 +794,8 @@ function policyOutputToDecision(
   team: Team,
   logits: readonly number[],
   useTacticalRollout: boolean,
-  tacticalTuning?: TacticalRolloutTuning
+  tacticalTuning?: TacticalRolloutTuning,
+  opponentPolicy?: TacticalOpponentPolicy
 ): {
   command: TankCommand;
   policyActionIndex?: number;
@@ -814,7 +834,8 @@ function policyOutputToDecision(
     state,
     team,
     policyActionIndex,
-    tuning: tacticalTuning
+    tuning: tacticalTuning,
+    opponentPolicy
   });
 
   return {
