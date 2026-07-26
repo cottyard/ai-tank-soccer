@@ -304,6 +304,41 @@ Per-seed full results are `163: 2-1/0.625`, `181: 1-0/0.625`, `211: 2-1/0.625`, 
 
 Decision: accept the evolving gate and diagnostic infrastructure, but do not claim a new runtime-policy promotion in this pass. Runtime behavior is intentionally unchanged after rejecting both local rules. The next AI-quality work should use the paired league to explain seed `269` and should prioritize a faster runtime-parity counterfactual engine before attempting another broad sequence search.
 
+2026-07-26 simulation speed and measurement audit:
+
+This pass questioned the process rather than adding another heuristic. Two structural problems were found and fixed, and three AI-strength hypotheses were then tested with the repaired instrument. Runtime behavior is intentionally unchanged.
+
+**Problem 1: the physics kernel was accidentally quadratic in redundant work.** `tankLocalPointToWorld` recomputed `Math.cos`/`Math.sin` of the tank angle for every polygon vertex, inside all 16 collision iterations, several times per iteration. Measured cost was `10658` trig calls per frame in contact and `4352` when idle, for a two-tank simulation, plus one allocation per vertex, axis, centroid, and projection. This one defect set the ceiling on gate size, rollout horizon, and counterfactual sweeps, so it was the real cause of the `800`-combination sweep timing out.
+
+The collision path now runs over reusable `Float64Array` buffers with a two-entry angle cache and bounding-box rejection, keeping the exact operand order of every floating-point expression:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Raw `stepGame` | `153.4us`/frame | `6.0us`/frame (`25.6x`) |
+| Standard + holdout gates | `~200s` | `25.7s` |
+| Fingerprint suite | `11083ms` | `1450ms` |
+
+Because every historical result depends on deterministic trajectories, `scripts/fingerprint-simulation.ts` folds every float of every frame into a 64-bit digest, and `tests/simulationFingerprint.test.ts` pins physics and full runtime decision stacks to exact digests. All 13 scenario digests and every per-seed gate number reproduce exactly. Any future physics edit that changes a single ULP now fails the suite instead of silently invalidating the record above.
+
+**Problem 2: the legacy gates cannot measure what they were being used for.** Standard and holdout are 20 matches each, so win proxy moves in `0.025` steps and has no error bar. Every accepted heuristic in this file was judged on that instrument, several by margins far below its resolution.
+
+`src/ai/policyBenchmark.ts` and `scripts/benchmark-runtime.ts` add a large-sample paired benchmark: one physical start played twice with sides swapped, the scenario as the unit of observation, explicit 95% confidence intervals, and a paired-difference comparison that cancels start-state variance. Seeds come from a high range disjoint from the gate and league seeds, so it measures generalisation instead of re-examining tuned seeds. Identical strategies score exactly `0.5000` with zero variance, which is asserted in tests and is the same symmetry check the league needed. Work shards across worker threads, so 400 scenarios cost about seven minutes.
+
+Results, opponent = accepted runtime unless stated, mirror control exactly `0.5`:
+
+| Hypothesis | Result | Verdict |
+| --- | --- | --- |
+| The rollout stack is real, not overfitting | `0.7331 +-0.0190` vs traditional, against `0.4794 +-0.0128` without rollout; paired delta `-0.2537`, CI `[-0.2731,-0.2344]`, 800 matches | Strongly load-bearing |
+| The legacy gate reports true strength | Gate says `avgWin=0.925` on its five tuned seeds; 400 fresh scenarios say `0.7331` | Gate overstates by ~`0.19` |
+| Deeper search helps | `frames=36` scored `0.5212`, CI `[0.5026,0.5399]` over 200 scenarios, then `0.5095`, CI `[0.4978,0.5212]` over 500 independent scenarios | Did not replicate; winner's curse |
+| Search should run more often | `force=1` scored `0.4738`, goals `62-83`; with margin `0.12`, `0.4725`, goals `59-81` | Actively harmful |
+
+The depth result is the important process lesson. Three variants were screened, the best cleared a naive 95% interval, and it evaporated on fresh seeds. The old 20-match gate had no way to detect that and would have accepted it, which is the most likely explanation for several narrow constants already in this file.
+
+The trigger result independently confirms the earlier midfield finding, previously supported only by 20-match anecdotes, and now with real error bars: expanding tactical rollout beyond its trigger loses.
+
+Conclusion: search depth and trigger coverage are both saturated. More search against the current objective loses, which means the hand-weighted linear position evaluator in `src/ai/positionEvaluation.ts` is the binding constraint on AI strength. The next real gain has to come from a better value function, not from another guarded rule or horizon constant.
+
 ## Architecture
 
 - Browser runtime: TypeScript + Vite.
@@ -365,6 +400,35 @@ Full verification:
 npm test
 npm run build
 cargo build --release --manifest-path trainer-rust\Cargo.toml
+```
+
+Large-sample paired benchmark. This is the primary strength measurement; the
+mirror control is exactly `0.5`, so a candidate is stronger only when its 95%
+interval excludes `0.5` and the result replicates on a different `--salt`:
+
+```powershell
+# Is a candidate actually stronger than the accepted runtime?
+npx tsx scripts/benchmark-runtime.ts `
+  --policies accepted-runtime `
+  --opponent accepted-runtime `
+  --scenarios 400
+
+# Compare search shapes, and ablate the rollout stack, on identical starts.
+npx tsx scripts/benchmark-runtime.ts `
+  --policies accepted-runtime,accepted-no-rollout,accepted-runtime@frames=36+margin=0.05 `
+  --opponent traditional `
+  --scenarios 400 `
+  --output training-runs/bench.json
+
+# Replicate a promising screen on independent seeds before believing it.
+npx tsx scripts/benchmark-runtime.ts --policies <candidate> --scenarios 500 --salt 2
+```
+
+Deterministic simulation fingerprints. Run before and after any physics or
+runtime change; identical digests prove trajectories are untouched:
+
+```powershell
+npx tsx scripts/fingerprint-simulation.ts
 ```
 
 Paired evolving-opponent league:
@@ -483,13 +547,15 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Keep opponent-league generation `1` frozen and use the paired `accepted-no-rollout` matchup to diagnose seed `269`, the only current full-gate row at `avgWin=0.500`. Compare the first full-runtime/no-rollout action divergences on identical physical starts before adding a rule.
-2. Treat the paired league as an additional generalization signal, not a replacement for the remaining legacy draws `31:0`, `71:0`, and `71:3`. Any seed-`269` change must retain standard/holdout `avgWin=0.925` and must not trade away the other rolling seed gains.
-3. Do not retry broad midfield rollout, direct `31:0` force-forward, or `71:3` follow-through guards without a changed evaluator/contact model; the rejected evidence remains valid.
-4. Prioritize a faster runtime-parity replay/counterfactual engine before another broad sequence sweep. The latest `800`-combination TypeScript sweep exceeded five minutes despite cached start states, so capped brute force is no longer an adequate scaling path.
-5. Once a runtime or weight change is genuinely promoted, preview and then advance the league exactly once. Preserve the fixed anchors and the retained continuity seed; commit the new generation with the promotion.
-6. End every session by auditing opponent diversity, paired-start correctness, evaluator alignment, search speed, diagnostic fidelity, and policy ownership. Update this plan when the process—not just a heuristic—is the limiting factor.
-7. Remove stale scratch files, record whether runtime AI actually improved or only the research process improved, commit the relevant source/tests/docs, and push the branch.
+The 2026-07-26 audit moved the bottleneck. Search is saturated, measurement is fixed, and the evaluator is now the limiting factor.
+
+1. **Replace the hand-weighted position evaluator with a learned value function.** This is the mainline task. `evaluatePosition` is ten hand-tuned linear terms, and the evidence says search quality is capped by it: deeper horizons do not replicate and searching everywhere loses. Train a value head to predict the actual match outcome from a state, using the fast kernel to generate labelled rollouts, then swap it into `tacticalRollout` behind the existing improvement margin. This is the case where a trained component should beat hand-coded logic, because the target is exactly the quantity the heuristic is failing to approximate.
+2. **Judge every candidate on the large-sample benchmark, not the legacy gates.** Require the 95% interval to exclude `0.5` against the accepted runtime, and require replication on an independent `--salt` before acceptance. A single screening pass that clears the interval is not evidence; the `frames=36` result proves it.
+3. **Keep the legacy gates and league as anchors only.** They must not regress, but they no longer measure progress. Do not tune constants to move `avgWin` on five seeds.
+4. **Re-test the accumulated heuristics once the evaluator improves.** Several narrow constants were fitted to individual matches on an instrument that could not resolve them. Ablate them on the benchmark; remove the ones that do not survive. Expect some to be neutral.
+5. **Do not spend further effort on rollout depth, trigger coverage, or another guarded rule** until the value function changes. All three are measured dead ends, and the measurements now have error bars.
+6. **Native/WASM porting is not currently justified for the playable AI.** At 5Hz decisions the browser now has roughly two orders of magnitude of headroom per decision, so runtime speed is no longer what limits search. Revisit only if offline label generation for the value function becomes the throughput constraint, and only with the fingerprint suite extended to cover cross-language parity.
+7. End every session by auditing measurement resolution first, then opponent diversity, evaluator alignment, and diagnostic fidelity. Record whether runtime AI actually improved or only the research process improved, remove scratch files, commit source/tests/docs, and push.
 
 ## Repository Hygiene
 
