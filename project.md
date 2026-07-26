@@ -54,6 +54,29 @@ When progress stalls, also audit whether the neural policy, traditional strategy
 
 Do not keep a tool, language boundary, runtime architecture, or workflow merely because it is already in the repository. The standard is whether it helps produce a stronger playable AI safely and repeatably.
 
+Every research session ends with an explicit process audit, not only a policy-result note. Review whether the opponent set, seed split, start-state pairing, rollout opponent model, metrics, trace fidelity, counterfactual speed, tests, and policy ownership boundaries still create useful pressure toward a stronger AI. If a workflow component is fixed, noisy, too slow, or rewards overfitting, repair it and record the change here. A session that discovers and fixes a misleading gate or a learning bottleneck is valid infrastructure progress even when runtime behavior is intentionally unchanged.
+
+## Evolving Opponent League
+
+The legacy standard and holdout gates remain fixed reproducibility anchors against `traditionalStrategy`; they are necessary but no longer sufficient. Repeatedly optimizing only those opponents and seeds can turn improvement into fixed-exam overfitting.
+
+The additional runtime opponent league is configured in `config/runtime-opponent-league.json` and has two lifecycle classes:
+
+- `anchor`: classic or special opponents that stay fixed so historical abilities cannot silently regress.
+- `rolling`: opponents derived from the latest accepted weights/runtime. Rolling profiles and most of their seeds advance after a real promotion, so future policies must handle an evolving field rather than only the original traditional opponent.
+
+Current generation `1` contains one fixed `classic-traditional` anchor plus two rolling opponents: `accepted-no-rollout`, which isolates whether the runtime tactical wrapper adds value over the accepted wrapper without search, and `accepted-runtime`, which is a mirrored latest-runtime symmetry/safety check. Because latest-runtime self-play is structurally symmetric, do not treat its raw win rate as a promotion objective; use it to expose team/start asymmetry, nondeterminism, and unsafe behavior. The no-rollout matchup is the more useful incremental-strength signal for runtime search changes.
+
+Rolling league matches use paired physical starts. Each scenario creates one fixed field state, then swaps candidate and opponent between red and blue without regenerating or mirroring the state around the candidate. This prevents the candidate-favoring start bias discovered in the first league implementation. The legacy gates intentionally retain their historical start semantics for continuity.
+
+League discipline:
+
+1. Freeze the league generation throughout an experiment so current and candidate face the same exam.
+2. Run the quick `2 x 300` league as a screen, then the full `4 x 600` rolling profiles for promotion or periodic audits.
+3. Keep legacy standard/holdout results as hard safety anchors; league gains cannot excuse a severe legacy regression.
+4. Advance the league only after an AI promotion is accepted. The advance tool preserves all anchor seeds and one continuity seed per rolling opponent while replacing the rest.
+5. Record per-opponent results. Do not collapse anchor, no-rollout, and runtime-mirror rows into one score because they answer different questions.
+
 ## Current HL Result
 
 2026-06-18 HL iterations:
@@ -207,28 +230,6 @@ Current remaining standard draws are still `31:0`, `71:0`, and `71:3`. The accep
 
 Decision: keep the offset rolling finish wait and fast-centering finish rollout if full verification passes. Standard win proxy improved from `0.900` to `0.925`, standard goals rose from `17-0` to `19-0`, and the latest rollout addition gives a small standard score/ball-progress gain over the prior accepted `0.925` state while holdout remains safe at `19-0`.
 
-2026-07-16 continuation from the accepted `avgWin=0.925` HL baseline:
-
-Accepted additions:
-
-1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass.
-2. Fixed steering direction in `regulateCriticalStaminaCommand`: when the ball is nearly straight ahead (`|local.lateral| < tankRadius * 0.18`) and the regulation reduces a two-track command to single-track, the code previously always dropped the right track (turning right), which was wrong when the ball was slightly to the left. Now chooses which track to drop based on the ball's lateral position. This converted holdout seed `97` from `2-0` to `3-0` (`win=0.750` → `0.875`).
-3. Added a minimum ball speed check (`ballSpeed >= 3`) to `shouldWaitForDriftingFinish`. Previously, the AI would wait indefinitely for a "drifting finish" even if the ball was effectively stationary in the deep finish zone (observed in seed `31:0` at frame `558` where ball speed was `1.374`). Gate confirmed completely safe (identical `0.925` / `0.925`).
-4. Unbounded the contest delta in `evaluatePositionDelta`. Previously, the contest delta was wrapped in `Math.max(0, ...)`, which meant the tactical rollout was completely blind to actions that lost contest (such as moving away from the ball while the opponent approached). While correcting this logically makes the rollout more robust, it resulted in exactly identical gate scores, meaning the neural policy and heuristics were already avoiding or filtering out contest-losing actions anyway.
-Rejected during this continuation:
-
-- A lateral-drift guard in `shouldWaitForOffsetRollingFinish` (suppress wait when `attackBallY * attackLateralVelocity > 0 && |attackLateralVelocity| > 25`) was too broad: it regressed seeds `19` (`5-0` → `4-0`) and `43` (`4-0` → `3-0`) without improving `71`. The offset rolling finish wait is protecting conversions in `19` and `43` even when lateral drift is present. Do not narrow this wait condition based on lateral velocity alone.
-- Enabling tactical rollout for midfield contested balls (within `tankRadius * 2.2` and middle 60% of field) caused catastrophic regression: standard dropped from `avgWin=0.925` to `0.775`, every seed lost goals. The 18-frame rollout makes worse midfield decisions than the neural policy's learned long-horizon strategies. Do not enable tactical rollout broadly in midfield.
-- A midfield safety override with a high improvement margin (`0.25` instead of default `0.018`) still regressed: seed `71` conceded a goal (`3-0` → `3-1`, `win=0.750` → `0.625`) and holdout seed `83` dropped from `4-0` to `3-0`. The evaluator is fundamentally misaligned with good midfield play — no margin level can make midfield rollout overrides safe. Do not attempt any variant of midfield tactical rollout until the position evaluator is redesigned to value midfield play correctly.
-
-Diagnostic findings from detailed inspection of all three remaining standard draws:
-
-- `31:0`: The opponent maintains exactly ~99px from the ball throughout the entire match (constant contact), parked near the goal and blocking the scoring path. Critical stamina regulation converts full-forward to single-track turns during the crucial approach phase (frames `414`-`456`). The ball stalls at zero speed for 30+ frames while both tanks recover stamina. This is fundamentally a contact/sequence model problem: the AI needs to push around a blocking opponent, not through it.
-- `71:0`: The neural policy consistently chooses action `5` (turn left) in midfield when action `7`/`8` (turn right / full forward) would be dramatically better (counterfactual scores `0.1`-`0.39` vs `-0.27` to `0.02`). Tactical rollout is NOT used because no `shouldUseTacticalRollout` conditions trigger for midfield balls. However, enabling rollout for midfield was catastrophic across three different experiments (broad trigger, high margin, safety override) because the position evaluator does not value midfield play correctly. This is a neural policy quality problem that requires either retraining or a midfield-specific evaluator.
-- `71:3`: Ball drifts rapidly toward the side wall (lateral velocity `29`-`83` px/frame, lane deteriorates `0.767` → `0.349`) while `shouldWaitForOffsetRollingFinish` triggers. Even when the wait is suppressed, the AI cannot redirect the ball. Confirmed as a rollout-evaluator continuation valuation problem, not an action-guard problem.
-
-Decision: keep both accepted changes. Standard gate is unchanged at `avgWin=0.925`; holdout improved from `avgWin=0.875` to `avgWin=0.925` across the two changes (+5.7% relative improvement). The remaining standard draws (`31:0`, `71:0`, `71:3`) are blocked by architectural limitations: the position evaluator's midfield misalignment, the neural policy's midfield quality, and the opponent-blocking contact model. Further progress on these draws requires deeper changes than heuristic threshold adjustments.
-
 2026-07-11 follow-up diagnostics from the accepted `avgWin=0.925` HL baseline:
 
 No runtime change was accepted in this pass. The main target was still standard draw `71:3`. Fixed sequence probes showed that a committed action-`7` continuation from frames `546` or `564` can convert the chance by frame `720`, but converting that observation directly into runtime policy did not survive online re-decision. A narrow direct action-`7` follow-through guard kept the first continuation touch but failed to convert `71:3`; widening it made the ball pin even deeper on the side wall. A `12+36` outward-finish tactical sequence profile made rollout choose action `7` at frame `546`, but then chose stop at frame `552`, increased lateral side-wall drift, and also failed to convert.
@@ -257,6 +258,52 @@ Accepted diagnostic addition: `scripts/inspect-runtime-match.ts --continuation-f
 
 Follow-up rollout-evaluator experiment: a terminal scoring penalty was applied only inside tactical rollout when a low-stamina branch ended with a deep, centered, non-scoring ball that lacked forward velocity. The hypothesis was that `71:3` was overvaluing low-speed deep finish states without needing another action guard. Focused tests passed after restricting the penalty to low initial stamina, but the local `71:3` diagnostic still drew and ended closer to the side wall. The standard gate regressed to goals `16-0`, `avgScore=489.474`, `avgWin=0.875`, `avgBp=0.226`, with seed `31` falling to `2-0` and seed `57` to `3-0`. Reverted. Do not add broad non-scoring deep-finish penalties; the evaluator needs a more predictive distinction between a recoverable finish path and a low-speed dead end.
 
+2026-07-16 continuation from the accepted `avgWin=0.925` HL baseline:
+
+Accepted additions:
+
+1. Relaxed the `attackBallY` threshold in `shouldPreserveCriticalRollingFinishPush` from `>= 0` to `>= -12`, allowing nearly-centered balls on either side of the goal center to preserve full-forward critical stamina pushes. The original strict `>= 0` condition was tuned to seed `19:1` which happened to have positive `attackBallY`, but seed `31:0` misses preservation by only `6.5px` at frame `414` where all other conditions pass.
+2. Fixed steering direction in `regulateCriticalStaminaCommand`: when the ball is nearly straight ahead (`|local.lateral| < tankRadius * 0.18`) and the regulation reduces a two-track command to single-track, the code previously always dropped the right track (turning right), which was wrong when the ball was slightly to the left. Now chooses which track to drop based on the ball's lateral position. This converted holdout seed `97` from `2-0` to `3-0` (`win=0.750` → `0.875`).
+3. Added a minimum ball speed check (`ballSpeed >= 3`) to `shouldWaitForDriftingFinish`. Previously, the AI would wait indefinitely for a "drifting finish" even if the ball was effectively stationary in the deep finish zone (observed in seed `31:0` at frame `558` where ball speed was `1.374`). Gate confirmed completely safe (identical `0.925` / `0.925`).
+4. Unbounded the contest delta in `evaluatePositionDelta`. Previously, the contest delta was wrapped in `Math.max(0, ...)`, which meant the tactical rollout was completely blind to actions that lost contest (such as moving away from the ball while the opponent approached). While correcting this logically makes the rollout more robust, it resulted in exactly identical gate scores, meaning the neural policy and heuristics were already avoiding or filtering out contest-losing actions anyway.
+
+Rejected during this continuation:
+
+- A lateral-drift guard in `shouldWaitForOffsetRollingFinish` (suppress wait when `attackBallY * attackLateralVelocity > 0 && |attackLateralVelocity| > 25`) was too broad: it regressed seeds `19` (`5-0` → `4-0`) and `43` (`4-0` → `3-0`) without improving `71`. The offset rolling finish wait is protecting conversions in `19` and `43` even when lateral drift is present. Do not narrow this wait condition based on lateral velocity alone.
+- Enabling tactical rollout for midfield contested balls (within `tankRadius * 2.2` and middle 60% of field) caused catastrophic regression: standard dropped from `avgWin=0.925` to `0.775`, every seed lost goals. The 18-frame rollout makes worse midfield decisions than the neural policy's learned long-horizon strategies. Do not enable tactical rollout broadly in midfield.
+- A midfield safety override with a high improvement margin (`0.25` instead of default `0.018`) still regressed: seed `71` conceded a goal (`3-0` → `3-1`, `win=0.750` → `0.625`) and holdout seed `83` dropped from `4-0` to `3-0`. The evaluator is fundamentally misaligned with good midfield play — no margin level can make midfield rollout overrides safe. Do not attempt any variant of midfield tactical rollout until the position evaluator is redesigned to value midfield play correctly.
+
+Diagnostic findings from detailed inspection of all three remaining standard draws:
+
+- `31:0`: The opponent maintains exactly ~99px from the ball throughout the entire match (constant contact), parked near the goal and blocking the scoring path. Critical stamina regulation converts full-forward to single-track turns during the crucial approach phase (frames `414`-`456`). The ball stalls at zero speed for 30+ frames while both tanks recover stamina. This is fundamentally a contact/sequence model problem: the AI needs to push around a blocking opponent, not through it.
+- `71:0`: The neural policy consistently chooses action `5` (turn left) in midfield when action `7`/`8` (turn right / full forward) would be dramatically better (counterfactual scores `0.1`-`0.39` vs `-0.27` to `0.02`). Tactical rollout is NOT used because no `shouldUseTacticalRollout` conditions trigger for midfield balls. However, enabling rollout for midfield was catastrophic across three different experiments (broad trigger, high margin, safety override) because the position evaluator does not value midfield play correctly. This is a neural policy quality problem that requires either retraining or a midfield-specific evaluator.
+- `71:3`: Ball drifts rapidly toward the side wall (lateral velocity `29`-`83` px/frame, lane deteriorates `0.767` → `0.349`) while `shouldWaitForOffsetRollingFinish` triggers. Even when the wait is suppressed, the AI cannot redirect the ball. Confirmed as a rollout-evaluator continuation valuation problem, not an action-guard problem.
+
+Decision: keep both accepted changes. Standard gate is unchanged at `avgWin=0.925`; holdout improved from `avgWin=0.875` to `avgWin=0.925` across the two changes (+5.7% relative improvement). The remaining standard draws (`31:0`, `71:0`, `71:3`) are blocked by architectural limitations: the position evaluator's midfield misalignment, the neural policy's midfield quality, and the opponent-blocking contact model. Further progress on these draws requires deeper changes than heuristic threshold adjustments.
+
+2026-07-26 workspace/commit review and opponent-league audit:
+
+No recent commit was withdrawn. The critical-stamina steering-direction fix is a real holdout improvement and stays. The minimum drifting-ball speed guard and negative contest delta are logically correct, tested fixes whose legacy gates are neutral; they stay as correctness protections rather than being misreported as strength gains. The remaining reviewed commits are documentation. The project timeline was reordered chronologically during this audit. An unfinished workspace export and a low-quality `debug-midfield.ts` scratch script were not accepted as project work.
+
+Two direct runtime experiments were rejected:
+
+- Extending the critical rolling-finish push window for `31:0` kept full-forward longer but still drew and drove the final ball toward the side wall.
+- A narrow defensive-recovery rollout trigger for `71:0` improved final `attackX` from about `474` to `534` but did not convert the draw. It was reverted because tiny terminal movement without an outcome gain is not sufficient evidence.
+
+An `800`-combination contact sequence sweep then exceeded five minutes without returning a useful result. This confirmed that the current TypeScript counterfactual path is still a research bottleneck and should not be scaled by brute force.
+
+The larger finding was a gate-design limitation: all accepted progress had been measured against a fixed traditional opponent and fixed seed splits. The new opponent league adds rolling accepted-policy opponents while retaining classic anchors. Its first implementation exposed and fixed two evaluation mistakes before the results were trusted: unpaired matches used different random scenes for each side, and the first attempted pairing mirrored the scene around the candidate, giving the candidate the favorable attack-frame start twice. The final implementation holds one physical state fixed and swaps strategies between red and blue. A regression test now requires identical paired strategies to produce symmetric aggregate goals and win proxy.
+
+Trusted generation `1` baseline against the paired `accepted-no-rollout` rolling opponent, `matches=4`, `frames=600`:
+
+| Opponent | Seeds | Goals | avgScore | avgWin | avgBp |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `accepted-no-rollout` | `[163,181,211,239,269]` | `8-3` | `154.435` | `0.600` | `0.055` |
+
+Per-seed full results are `163: 2-1/0.625`, `181: 1-0/0.625`, `211: 2-1/0.625`, `239: 1-0/0.625`, and `269: 2-1/0.500`. This proves that the full runtime wrapper adds aggregate value over the same accepted wrapper without tactical rollout, but it also exposes seed `269` as the first rolling-league target. A paired latest-runtime mirror quick check returns symmetric `2-2`, `avgWin=0.500`, `avgBp=0`, as expected; it is a symmetry diagnostic rather than a strength target.
+
+Decision: accept the evolving gate and diagnostic infrastructure, but do not claim a new runtime-policy promotion in this pass. Runtime behavior is intentionally unchanged after rejecting both local rules. The next AI-quality work should use the paired league to explain seed `269` and should prioritize a faster runtime-parity counterfactual engine before attempting another broad sequence search.
+
 ## Architecture
 
 - Browser runtime: TypeScript + Vite.
@@ -267,6 +314,7 @@ Follow-up rollout-evaluator experiment: a terminal scoring penalty was applied o
 - Accepted neural weights and loader: `public/models/neural-best.json`, `src/ai/bundledPolicy.ts`.
 - Policy network and old PPO tooling: `src/ai/policyNetwork.ts`, `src/ai/policyGradientTraining.ts`, `scripts/train-policy-gradient.ts`, `trainer-rust`.
 - Runtime deterministic gates and decision traces: `src/ai/policyGate.ts`, `scripts/trace-runtime-policy.ts`.
+- Evolving paired opponent league: `src/ai/runtimeOpponentLeague.ts`, `config/runtime-opponent-league.json`, `scripts/evaluate-runtime-league.ts`.
 
 Policy shape must remain compatible with the browser unless a coordinated migration is done:
 
@@ -284,17 +332,21 @@ Runtime heuristic acceptance:
 1. The change must have a concrete failure-mode hypothesis.
 2. It must add or update a regression test when the behavior is local enough to test.
 3. It must be evaluated on standard and holdout gates.
-4. Keep it only if aggregate score/goals improve or remain safe and no severe seed-level regression is left unexplained.
+4. Run the quick paired opponent league during iteration and the relevant full rolling profiles before promotion.
+5. Keep it only if aggregate score/goals improve or remain safe, no severe seed-level regression is left unexplained, and rolling-opponent results do not reveal that the gain is only traditional-opponent overfitting.
+6. Complete and record the end-of-session process audit.
 
 Neural weight promotion:
 
 1. Train a candidate into `training-runs/...json`.
 2. Evaluate current accepted weights and the candidate on the standard gate.
 3. Evaluate promising candidates on the holdout gate.
-4. Promote only if score improves while goals and win proxy do not meaningfully regress.
-5. Replace `public/models/neural-best.json` only after promotion.
-6. Run full verification.
-7. Commit source, tests, docs, and accepted weights together.
+4. Evaluate promising candidates against the frozen current opponent-league generation, using current accepted weights for rolling opponents.
+5. Promote only if score improves while goals and win proxy do not meaningfully regress across anchors and the rolling league.
+6. Replace `public/models/neural-best.json` only after promotion.
+7. Advance the opponent league once, after acceptance; never rotate it while comparing current and candidate.
+8. Run full verification.
+9. Commit source, tests, docs, accepted weights, and the advanced league config together.
 
 Rejected candidates stay in `training-runs/` for analysis and are not committed.
 
@@ -313,6 +365,28 @@ Full verification:
 npm test
 npm run build
 cargo build --release --manifest-path trainer-rust\Cargo.toml
+```
+
+Paired evolving-opponent league:
+
+```powershell
+# Fast research screen.
+npm run gate:league:quick
+
+# Full promotion/periodic audit. Use --details for per-seed rows.
+npm run gate:league -- --details
+
+# Diagnose a rolling-opponent failure with exact physical start pairing.
+npx tsx scripts/diagnose-runtime-failures.ts `
+  --opponent accepted-no-rollout `
+  --paired-starts `
+  --seeds 269 `
+  --matches 4 `
+  --frames 600
+
+# Preview first. Run the package command only after a promotion is accepted.
+npx tsx scripts/advance-runtime-league.ts
+npm run gate:league:advance
 ```
 
 Runtime gate comparison:
@@ -409,13 +483,13 @@ The practical lesson is not that neural networks are useless. The lesson is that
 
 ## Next Work Plan
 
-1. Use `scripts/diagnose-runtime-failures.ts`, cached `scripts/probe-runtime-macros.ts`, and budgeted `scripts/probe-runtime-sequences.ts --max-combinations ...` sweeps to study the remaining standard draws: `31:0`, `71:0`, and `71:3`.
-2. Prioritize `71:3` as a rollout-evaluator problem, not an action-guard problem. Direct action-`7` follow-through, action-`8` low-stamina continuation, a broad `12+36` outward-finish sequence, and broad low-speed finish-threat deflation have not converted safely; use `--rollout-breakdown` to inspect narrower terminal valuation issues before adding another trigger.
-3. Treat `71:0` as a separate midfield/low-finish recovery problem. Recent focused macro and sequence probes improved some final ball positions but found no `600`-frame conversion, so do not add low-stamina drive exceptions without a stronger aggregate signal.
-4. Revisit `31:0` only with a cleaner contact/sequence model. Simple force-forward, stop, and side-lane wait probes have not produced a reliable conversion.
-5. When progress stalls, explicitly audit whether the neural policy, traditional strategy, heuristic wrapper, or tactical rollout owns the right state classes. A focused neural component or policy-boundary change is acceptable if it targets a concrete failure and survives standard/holdout gates.
-6. If further improvements still stall on search speed after bounded sequence sweeps, prioritize a runtime-parity native evaluator or a faster replay/counterfactual harness. The TypeScript gate is still slow, but cached macro forking and capped sequence sweeps reduce the immediate counterfactual bottleneck.
-7. After each work session, remove stale project notes, record whether the AI improved, commit the relevant source/tests/docs, and push the branch.
+1. Keep opponent-league generation `1` frozen and use the paired `accepted-no-rollout` matchup to diagnose seed `269`, the only current full-gate row at `avgWin=0.500`. Compare the first full-runtime/no-rollout action divergences on identical physical starts before adding a rule.
+2. Treat the paired league as an additional generalization signal, not a replacement for the remaining legacy draws `31:0`, `71:0`, and `71:3`. Any seed-`269` change must retain standard/holdout `avgWin=0.925` and must not trade away the other rolling seed gains.
+3. Do not retry broad midfield rollout, direct `31:0` force-forward, or `71:3` follow-through guards without a changed evaluator/contact model; the rejected evidence remains valid.
+4. Prioritize a faster runtime-parity replay/counterfactual engine before another broad sequence sweep. The latest `800`-combination TypeScript sweep exceeded five minutes despite cached start states, so capped brute force is no longer an adequate scaling path.
+5. Once a runtime or weight change is genuinely promoted, preview and then advance the league exactly once. Preserve the fixed anchors and the retained continuity seed; commit the new generation with the promotion.
+6. End every session by auditing opponent diversity, paired-start correctness, evaluator alignment, search speed, diagnostic fidelity, and policy ownership. Update this plan when the process—not just a heuristic—is the limiting factor.
+7. Remove stale scratch files, record whether runtime AI actually improved or only the research process improved, commit the relevant source/tests/docs, and push the branch.
 
 ## Repository Hygiene
 

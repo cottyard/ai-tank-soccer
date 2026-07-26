@@ -1,7 +1,10 @@
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createNeuralStrategy, type NeuralDecisionTrace } from '../src/ai/neuralStrategy';
-import { traditionalStrategy } from '../src/ai/traditionalStrategy';
+import {
+  createRuntimeOpponentStrategy,
+  type RuntimeOpponentKind
+} from '../src/ai/runtimeOpponentLeague';
 import { FIELD, createInitialState, type GameState, type Team, type Vec2 } from '../src/game/model';
 import { simulateMatch } from '../src/game/match';
 import { loadWeightsPayload } from './coach-neural';
@@ -13,6 +16,10 @@ declare const process: {
 
 export type RuntimeFailureDiagnosticOptions = {
   weightsPath: string;
+  opponentKind: RuntimeOpponentKind;
+  opponentWeightsPath: string;
+  tacticalRollout: boolean;
+  pairedStarts: boolean;
   outputPath?: string;
   seeds: number[];
   matches: number;
@@ -122,6 +129,10 @@ const ACTION_COUNT = 9;
 export function parseRuntimeFailureDiagnosticArgs(argv: readonly string[]): RuntimeFailureDiagnosticOptions {
   return {
     weightsPath: stringArg(argv, '--weights') ?? 'public/models/neural-best.json',
+    opponentKind: opponentKindArg(argv),
+    opponentWeightsPath: stringArg(argv, '--opponent-weights') ?? 'public/models/neural-best.json',
+    tacticalRollout: !argv.includes('--no-tactical-rollout'),
+    pairedStarts: argv.includes('--paired-starts'),
     outputPath: stringArg(argv, '--output'),
     seeds: seedListArg(argv, '--seeds', DEFAULT_STANDARD_SEEDS),
     matches: positiveIntegerArg(argv, '--matches', 4),
@@ -135,6 +146,12 @@ export function runRuntimeFailureDiagnostics(
   options: RuntimeFailureDiagnosticOptions
 ): RuntimeFailureDiagnosticResult {
   const weights = loadWeightsPayload(readFileSync(options.weightsPath, 'utf8'));
+  const opponentWeights = loadWeightsPayload(readFileSync(options.opponentWeightsPath, 'utf8'));
+  const opponentStrategy = createRuntimeOpponentStrategy(
+    options.opponentKind,
+    opponentWeights,
+    `diagnostic-${options.opponentKind}`
+  );
   const matches: RuntimeMatchDiagnostic[] = [];
   const summary = {
     matches: 0,
@@ -152,13 +169,18 @@ export function runRuntimeFailureDiagnostics(
       const neural = createNeuralStrategy({
         weights,
         name: 'runtime-failure-diagnostic',
-        tacticalRollout: true,
+        tacticalRollout: options.tacticalRollout,
         onDecision: (trace) => traces.push(trace)
       });
-      const initialState = createSeededInitialState(seed, match, team);
+      const scenario = options.pairedStarts ? Math.floor(match / 2) : match;
+      const initialState = createSeededInitialState(
+        seed,
+        scenario,
+        options.pairedStarts ? 'red' : team
+      );
       const result = simulateMatch({
-        red: team === 'red' ? neural : traditionalStrategy,
-        blue: team === 'blue' ? neural : traditionalStrategy,
+        red: team === 'red' ? neural : opponentStrategy,
+        blue: team === 'blue' ? neural : opponentStrategy,
         frames: options.frames,
         initialState
       }).state;
@@ -381,6 +403,9 @@ function tankSnapshot(state: GameState, team: Team): TankSnapshot {
 function formatSummary(result: RuntimeFailureDiagnosticResult): string {
   return [
     'diagnostic:',
+    `opponent=${result.options.opponentKind}`,
+    `tactical=${result.options.tacticalRollout}`,
+    `paired=${result.options.pairedStarts}`,
     `seeds=${result.options.seeds.join(',')}`,
     `matches=${result.summary.matches}`,
     `goals=${result.summary.goalsFor}-${result.summary.goalsAgainst}`,
@@ -533,6 +558,13 @@ function numberArg(argv: readonly string[], name: string, fallback: number): num
 
 function positiveIntegerArg(argv: readonly string[], name: string, fallback: number): number {
   return Math.max(1, Math.floor(numberArg(argv, name, fallback)));
+}
+
+function opponentKindArg(argv: readonly string[]): RuntimeOpponentKind {
+  const value = stringArg(argv, '--opponent');
+  return value === 'accepted-no-rollout' || value === 'accepted-runtime'
+    ? value
+    : 'traditional';
 }
 
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('/diagnose-runtime-failures.ts') ||

@@ -7,6 +7,7 @@ import {
   compareRuntimeTraces,
   evaluatePolicyGate,
   evaluateRuntimePolicy,
+  evaluateRuntimePolicyAgainst,
   selectAcceptedPolicy,
   traceRuntimePolicyDecisions,
   traceRuntimePolicy,
@@ -23,6 +24,7 @@ import {
 import { defaultNeuralWeights } from '../src/ai/neuralWeights';
 import type { EvaluationOptions, EvaluationResult } from '../src/ai/neuralTraining';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
+import { createNeuralStrategy } from '../src/ai/neuralStrategy';
 
 function scoredWeights(score: number): number[] {
   const weights = defaultNeuralWeights();
@@ -139,6 +141,25 @@ describe('policy adoption gate', () => {
 
     expect(options.seeds).toEqual([83, 97, 109, 127, 149]);
     expect(options.matches).toBe(4);
+  });
+
+  it('pairs one fixed physical start so identical strategies have symmetric aggregate outcomes', () => {
+    const weights = defaultNeuralWeights();
+    const result = evaluateRuntimePolicyAgainst(
+      weights,
+      createNeuralStrategy({ weights, tacticalRollout: false }),
+      {
+        seed: 5,
+        matches: 2,
+        frames: 90,
+        tacticalRollout: false,
+        pairedStarts: true
+      }
+    );
+
+    expect(result.goalsFor).toBe(result.goalsAgainst);
+    expect(result.winProxy).toBe(0.5);
+    expect(Number.isFinite(result.ballProgress)).toBe(true);
   });
 
   it('writes decision-level policy visibility analysis from the trace CLI', () => {

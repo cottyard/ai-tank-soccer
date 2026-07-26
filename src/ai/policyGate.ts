@@ -9,6 +9,7 @@ import { POLICY_ACTION_COUNT } from './policyActions';
 import { traditionalStrategy } from './traditionalStrategy';
 import { FIELD, createInitialState, type GameState, type Team } from '../game/model';
 import { simulateMatch } from '../game/match';
+import type { Strategy } from '../game/strategy';
 
 export type PolicyGateOptions = EvaluationOptions & {
   minDelta?: number;
@@ -19,6 +20,8 @@ export type RuntimeEvaluationOptions = {
   seed?: number;
   matches?: number;
   frames?: number;
+  tacticalRollout?: boolean;
+  pairedStarts?: boolean;
 };
 
 export type RuntimeEvaluationResult = EvaluationResult & {
@@ -223,6 +226,14 @@ export function evaluateRuntimePolicy(
   return evaluateRuntimePolicyInternal(weights, options, false).result;
 }
 
+export function evaluateRuntimePolicyAgainst(
+  weights: NeuralWeights,
+  opponent: Strategy,
+  options: RuntimeEvaluationOptions = {}
+): RuntimeEvaluationResult {
+  return evaluateRuntimePolicyInternal(weights, options, false, false, opponent).result;
+}
+
 export function traceRuntimePolicy(
   weights: NeuralWeights,
   options: RuntimeEvaluationOptions & { seeds?: readonly number[] } = {}
@@ -411,7 +422,8 @@ function evaluateRuntimePolicyInternal(
   weights: NeuralWeights,
   options: RuntimeEvaluationOptions = {},
   collectTrace: boolean,
-  collectDecisionRecords = false
+  collectDecisionRecords = false,
+  opponentStrategy: Strategy = traditionalStrategy
 ): {
   result: RuntimeEvaluationResult;
   decisions: number;
@@ -444,7 +456,7 @@ function evaluateRuntimePolicyInternal(
   const neural = createNeuralStrategy({
     weights,
     name: 'neural-runtime-gate',
-    tacticalRollout: true,
+    tacticalRollout: options.tacticalRollout ?? true,
     onDecision: collectTrace ? (trace) => {
       recordDecisionTrace(traceTotals, trace);
       if (collectDecisionRecords) {
@@ -469,10 +481,15 @@ function evaluateRuntimePolicyInternal(
     currentMatch = match;
     currentTeam = team;
     decisionIndex = 0;
-    const initialState = createSeededInitialState(seed, match, team);
+    const scenario = options.pairedStarts ? Math.floor(match / 2) : match;
+    const initialState = createSeededInitialState(
+      seed,
+      scenario,
+      options.pairedStarts ? 'red' : team
+    );
     const result = simulateMatch({
-      red: team === 'red' ? neural : traditionalStrategy,
-      blue: team === 'blue' ? neural : traditionalStrategy,
+      red: team === 'red' ? neural : opponentStrategy,
+      blue: team === 'blue' ? neural : opponentStrategy,
       frames,
       initialState
     }).state;

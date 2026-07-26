@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "generation": 1,
+  "opponents": [
+    {
+      "id": "classic-traditional",
+      "lifecycle": "anchor",
+      "kind": "traditional",
+      "seeds": [19, 31, 43, 57, 71, 83, 97, 109, 127, 149]
+    },
+    {
+      "id": "accepted-no-rollout",
+      "lifecycle": "rolling",
+      "kind": "accepted-no-rollout",
+      "seeds": [163, 181, 211, 239, 269]
+    },
+    {
+      "id": "accepted-runtime",
+      "lifecycle": "rolling",
+      "kind": "accepted-runtime",
+      "seeds": [283, 307, 337, 367, 397]
+    }
+  ]
+}

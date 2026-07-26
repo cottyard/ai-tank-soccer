@@ -13,6 +13,10 @@ describe('runtime failure diagnostics', () => {
     const options = parseRuntimeFailureDiagnosticArgs([
       '--weights',
       'weights.json',
+      '--opponent',
+      'accepted-no-rollout',
+      '--opponent-weights',
+      'opponent.json',
       '--output',
       'training-runs/diagnostics.json',
       '--seeds',
@@ -29,6 +33,10 @@ describe('runtime failure diagnostics', () => {
 
     expect(options).toEqual({
       weightsPath: 'weights.json',
+      opponentKind: 'accepted-no-rollout',
+      opponentWeightsPath: 'opponent.json',
+      tacticalRollout: true,
+      pairedStarts: false,
       outputPath: 'training-runs/diagnostics.json',
       seeds: [19, 31],
       matches: 2,
