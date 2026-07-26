@@ -14,11 +14,18 @@ import { loadWeightsPayload } from '../scripts/coach-neural';
  * Deterministic trajectories are this project's only promotion evidence, so the
  * physics kernel and the runtime decision stack are pinned to exact digests.
  *
- * These values were captured at commit 540980c, before the simulation hot path
- * was optimised. Any future change that alters a single float of any frame will
- * fail here. If a change intends to alter physics, update these digests in the
- * same commit and re-baseline every gate number in project.md, because all
- * historical results become incomparable.
+ * The physics digests were captured at commit 540980c, before the simulation hot
+ * path was optimised, and have never changed since: the kernel is bit-identical.
+ * Any future change that alters a single float of any frame fails here. If a
+ * change intends to alter physics, update these digests in the same commit and
+ * re-baseline every gate number in project.md, because all historical results
+ * become incomparable.
+ *
+ * The runtime digests were re-baselined once, when the learned value model was
+ * promoted into the rollout's terminal score. That promotion changed decisions
+ * and therefore trajectories, which is why two of the three moved while every
+ * physics digest stayed identical - exactly the signature an AI-only change
+ * should have.
  */
 
 const PHYSICS_DIGESTS: Record<string, string> = {
@@ -35,12 +42,12 @@ const PHYSICS_DIGESTS: Record<string, string> = {
 };
 
 const RUNTIME_DIGESTS: Record<string, string> = {
-  'runtime/seed-19': '5e0c1c892ed44f88',
+  'runtime/seed-19': 'df5ec1fb09d7604e',
   'runtime/seed-31': 'd80e33c46e79ea4a',
-  'runtime/seed-71': '1c4164ed03532f05'
+  'runtime/seed-71': 'bac35062e5ef015f'
 };
 
-const COMBINED_DIGEST = '21d512080e0fde64';
+const COMBINED_DIGEST = 'c8794325caf73210';
 
 describe('simulation fingerprint', () => {
   it('keeps every scripted physics trajectory bit-exact', () => {

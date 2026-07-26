@@ -13,8 +13,19 @@ import {
 import {
   chooseTacticalAction,
   type TacticalOpponentPolicy,
-  type TacticalRolloutTuning
+  type TacticalRolloutTuning,
+  type TacticalStateValue
 } from './tacticalRollout';
+import { evaluateValue, type ValueWeights } from './valueNetwork';
+import { evaluatePosition } from './positionEvaluation';
+import { BUNDLED_VALUE_BLEND, BUNDLED_VALUE_WEIGHTS } from './bundledValueModel';
+
+/**
+ * Converts the value network's [-1,1] next-goal estimate into the same units as
+ * `evaluatePosition`, whose goal term is weighted 12. That keeps the existing
+ * tactical improvement margin meaningful when the learned model is swapped in.
+ */
+const VALUE_GOAL_SCALE = 12;
 
 const STAMINA_CONSERVE_RATIO = 0.58;
 const CRITICAL_STAMINA_RATIO = 0.22;
@@ -26,6 +37,7 @@ export type NeuralStrategyOptions = {
   name?: string;
   tacticalRollout?: boolean;
   tacticalTuning?: TacticalRolloutTuning;
+  valueWeights?: ValueWeights;
   onDecision?: (trace: NeuralDecisionTrace) => void;
 };
 
@@ -95,6 +107,38 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
     ) ?? 4;
   };
 
+  // Promoted default: the learned value blended into the rollout's terminal
+  // score. Explicit tuning fields still win, so a benchmark variant that pins
+  // one knob does not silently also switch the value model off.
+  const tacticalTuning: TacticalRolloutTuning = {
+    valueModel: 'blend',
+    valueBlend: BUNDLED_VALUE_BLEND,
+    ...options.tacticalTuning
+  };
+  const valueWeights = options.valueWeights ?? BUNDLED_VALUE_WEIGHTS;
+  // A pure outcome-prediction value has weak local gradient over an 18-frame
+  // horizon, so the blend keeps the dense heuristic shaping and adds the
+  // learned outcome signal on top of it.
+  const valueBlend = tacticalTuning.valueModel === 'blend'
+    ? tacticalTuning.valueBlend ?? BUNDLED_VALUE_BLEND
+    : 1;
+  const rolloutStateValue: TacticalStateValue | undefined = valueWeights
+    ? (state, team) => {
+        const tank = state.tanks.find(
+          (candidate) => candidate.team === team && candidate.index === 0
+        );
+        if (!tank) {
+          return 0;
+        }
+        const learned =
+          evaluateValue(extractTankInputs(state, team, tank), valueWeights) * VALUE_GOAL_SCALE;
+        if (valueBlend >= 1) {
+          return learned;
+        }
+        return valueBlend * learned + (1 - valueBlend) * evaluatePosition(state, team).total;
+      }
+    : undefined;
+
   return {
     name: options.name ?? 'neural-policy',
     decide(state, team): CommandMap {
@@ -125,10 +169,11 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
           team,
           evaluateTankNetwork(state, team, tank, resolveWeights()),
           tacticalRollout &&
-            (options.tacticalTuning?.forceTrigger === true ||
+            (tacticalTuning.forceTrigger === true ||
               shouldUseTacticalRollout(state, team, tank, pressures)),
-          options.tacticalTuning,
-          rolloutOpponentPolicy
+          tacticalTuning,
+          rolloutOpponentPolicy,
+          rolloutStateValue
         );
       const command = decision.command;
       const regulatedCommand = regulateCriticalStaminaCommand(state, team, tank, pressures, command);
@@ -795,7 +840,8 @@ function policyOutputToDecision(
   logits: readonly number[],
   useTacticalRollout: boolean,
   tacticalTuning?: TacticalRolloutTuning,
-  opponentPolicy?: TacticalOpponentPolicy
+  opponentPolicy?: TacticalOpponentPolicy,
+  stateValue?: TacticalStateValue
 ): {
   command: TankCommand;
   policyActionIndex?: number;
@@ -835,7 +881,8 @@ function policyOutputToDecision(
     team,
     policyActionIndex,
     tuning: tacticalTuning,
-    opponentPolicy
+    opponentPolicy,
+    stateValue
   });
 
   return {

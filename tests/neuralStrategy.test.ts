@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { FIELD, createInitialState, type GameState, type Team } from '../src/game/model';
 import { simulateMatch } from '../src/game/match';
 import { idleCommands, type Strategy } from '../src/game/strategy';
+import { traditionalStrategy } from '../src/ai/traditionalStrategy';
 import {
   NEURAL_INPUT_COUNT,
   NEURAL_HIDDEN_COUNT,
@@ -342,15 +343,25 @@ describe('neural tank soccer strategy', () => {
     });
   });
 
-  it('can still spend critical stamina for a clinching shot at the goal mouth', () => {
+  it('converts a goal-mouth chance at critical stamina', () => {
+    // This used to assert that the tank must drive immediately. Playing the
+    // state out showed that belief was wrong: at 12% stamina an immediate push
+    // finishes 0-0, while pausing to recover first finishes 1-0. Assert the
+    // outcome instead of the command, which is both what matters and a stricter
+    // check - the previous behaviour fails this test.
     const state = createDirectFinishState();
     const red = tank(state, 'red');
     red.stamina = red.maxStamina * 0.12;
 
-    expect(createNeuralStrategy().decide(state, 'red')['red-0']).not.toEqual({
-      leftTrack: 0,
-      rightTrack: 0
-    });
+    const played = simulateMatch({
+      red: createNeuralStrategy(),
+      blue: traditionalStrategy,
+      frames: 360,
+      initialState: state
+    }).state;
+
+    expect(played.score.red).toBeGreaterThan(0);
+    expect(played.score.blue).toBe(0);
   });
 
   it('limits critical-stamina attacking contact to one active track', () => {

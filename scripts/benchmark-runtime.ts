@@ -52,6 +52,7 @@ export type BenchmarkCliOptions = {
   workers: number;
   salt: number;
   outputPath?: string;
+  valueWeightsPath?: string;
 };
 
 type ScenarioSpec = {
@@ -62,6 +63,7 @@ type ScenarioSpec = {
 
 type WorkerRequest = {
   weights: number[];
+  valueWeights?: number[];
   policies: BenchmarkPolicySpec[];
   opponent: BenchmarkPolicySpec;
   frames: number;
@@ -83,7 +85,8 @@ export function parseBenchmarkArgs(argv: readonly string[]): BenchmarkCliOptions
     frames: positiveIntegerArg(argv, '--frames', 600),
     workers: positiveIntegerArg(argv, '--workers', Math.max(1, cpus().length - 2)),
     salt: positiveIntegerArg(argv, '--salt', 1),
-    outputPath: stringArg(argv, '--output')
+    outputPath: stringArg(argv, '--output'),
+    valueWeightsPath: stringArg(argv, '--value-weights')
   };
 }
 
@@ -98,23 +101,33 @@ export function buildScenarioSpecs(scenarios: number, salt: number): ScenarioSpe
 export function createBenchmarkStrategy(
   spec: BenchmarkPolicySpec,
   weights: NeuralWeights,
-  name: string
+  name: string,
+  valueWeights?: NeuralWeights
 ): Strategy {
   if (!spec.tuning || spec.kind === 'traditional') {
     return createRuntimeOpponentStrategy(spec.kind, weights, name);
+  }
+  if (spec.tuning.valueModel === 'learned' && !valueWeights) {
+    throw new Error(`Policy ${spec.id} requests the learned value model but --value-weights was not supplied`);
   }
   return createNeuralStrategy({
     weights,
     name,
     tacticalRollout: spec.kind === 'accepted-runtime',
-    tacticalTuning: spec.tuning
+    tacticalTuning: spec.tuning,
+    valueWeights
   });
 }
 
 export function runBenchmarkShard(request: WorkerRequest): WorkerResponse[] {
-  const opponent = createBenchmarkStrategy(request.opponent, request.weights, 'benchmark-opponent');
+  const opponent = createBenchmarkStrategy(
+    request.opponent,
+    request.weights,
+    'benchmark-opponent',
+    request.valueWeights
+  );
   const policies = request.policies.map((spec, index) =>
-    createBenchmarkStrategy(spec, request.weights, `benchmark-policy-${index}`)
+    createBenchmarkStrategy(spec, request.weights, `benchmark-policy-${index}`, request.valueWeights)
   );
 
   return request.specs.map((spec) => ({
@@ -127,7 +140,8 @@ export function runBenchmarkShard(request: WorkerRequest): WorkerResponse[] {
 
 async function runParallel(
   options: BenchmarkCliOptions,
-  weights: NeuralWeights
+  weights: NeuralWeights,
+  valueWeights?: NeuralWeights
 ): Promise<BenchmarkScenarioOutcome[][]> {
   const specs = buildScenarioSpecs(options.scenarios, options.salt);
   const workerCount = Math.max(1, Math.min(options.workers, specs.length));
@@ -137,6 +151,7 @@ async function runParallel(
   const responses = await Promise.all(
     shards.map((shard) => runShardInWorker({
       weights: [...weights],
+      valueWeights: valueWeights ? [...valueWeights] : undefined,
       policies: options.policies,
       opponent: options.opponent,
       frames: options.frames,
@@ -170,9 +185,12 @@ function runShardInWorker(request: WorkerRequest): Promise<WorkerResponse[]> {
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const options = parseBenchmarkArgs(argv);
   const weights = loadWeightsPayload(readFileSync(options.weightsPath, 'utf8'));
+  const valueWeights = options.valueWeightsPath
+    ? (JSON.parse(readFileSync(options.valueWeightsPath, 'utf8')) as { weights: number[] }).weights
+    : undefined;
 
   const started = Date.now();
-  const results = await runParallel(options, weights);
+  const results = await runParallel(options, weights, valueWeights);
   const elapsed = Date.now() - started;
 
   const summaries = results.map(summarizeBenchmark);
@@ -247,6 +265,11 @@ export function parsePolicySpec(value: string): BenchmarkPolicySpec {
       tuning.forceTrigger = parsed !== 0;
     } else if (key === 'opp') {
       tuning.opponentModel = parsed !== 0 ? 'policy' : 'stop';
+    } else if (key === 'value') {
+      tuning.valueModel = parsed !== 0 ? 'learned' : 'heuristic';
+    } else if (key === 'blend') {
+      tuning.valueModel = 'blend';
+      tuning.valueBlend = parsed;
     } else {
       throw new Error(`Unknown tuning key "${key}" in policy spec: ${value}`);
     }

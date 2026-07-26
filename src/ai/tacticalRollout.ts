@@ -37,9 +37,24 @@ export type TacticalRolloutTuning = {
    * 5Hz cadence instead.
    */
   opponentModel?: 'stop' | 'policy';
+  /**
+   * Terminal state valuation. `heuristic` is the hand-weighted
+   * `evaluatePosition`; `learned` uses the trained value network supplied by the
+   * strategy wrapper. Benchmarking says this term, not search shape, is what
+   * limits play.
+   */
+  valueModel?: 'heuristic' | 'learned' | 'blend';
+  /** Weight on the learned value when `valueModel` is `blend`. */
+  valueBlend?: number;
 };
 
 export type TacticalOpponentPolicy = (state: Readonly<GameState>, team: Team) => number;
+
+/**
+ * Injected rather than imported so `tacticalRollout` does not have to depend on
+ * `neuralStrategy` for feature extraction, which would be circular.
+ */
+export type TacticalStateValue = (state: Readonly<GameState>, team: Team) => number;
 
 export type TacticalActionOptions = {
   state: Readonly<GameState>;
@@ -50,6 +65,7 @@ export type TacticalActionOptions = {
   improvementMargin?: number;
   tuning?: TacticalRolloutTuning;
   opponentPolicy?: TacticalOpponentPolicy;
+  stateValue?: TacticalStateValue;
 };
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
@@ -68,6 +84,18 @@ function activeOpponentPolicy(
   options: Pick<TacticalActionOptions, 'tuning' | 'opponentPolicy'>
 ): TacticalOpponentPolicy | undefined {
   return options.tuning?.opponentModel === 'policy' ? options.opponentPolicy : undefined;
+}
+
+/** Terminal valuation of a rollout state, heuristic unless a model is supplied. */
+function stateTotal(
+  options: Pick<TacticalActionOptions, 'tuning' | 'stateValue' | 'team'>,
+  state: Readonly<GameState>
+): number {
+  const model = options.tuning?.valueModel;
+  if ((model === 'learned' || model === 'blend') && options.stateValue) {
+    return options.stateValue(state, options.team);
+  }
+  return evaluatePosition(state, options.team).total;
 }
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
@@ -167,7 +195,7 @@ function scoreTacticalAction(options: ScoreOptions): number {
     commands[opponent.id] = actionIndexToCommand(options.opponentActionIndex);
   }
 
-  const before = evaluatePosition(simulated, options.team).total;
+  const before = stateTotal(options, simulated);
   const opponentPolicy = activeOpponentPolicy(options);
   for (let frame = 0; frame < options.rolloutFrames; frame += 1) {
     if (opponent && opponentPolicy && simulated.frame % AI_FRAMES_PER_DECISION === 0) {
@@ -176,7 +204,7 @@ function scoreTacticalAction(options: ScoreOptions): number {
     stepGame(simulated, commands, FIXED_DT);
   }
 
-  const after = evaluatePosition(simulated, options.team).total;
+  const after = stateTotal(options, simulated);
   const delta = evaluatePositionDelta(simulated, initial, options.team);
   const action = actionIndexToCommand(options.actionIndex);
   const trackCost = Math.abs(action.leftTrack) + Math.abs(action.rightTrack);
@@ -219,7 +247,7 @@ function scoreTacticalActionSequencePair(
     return Number.NEGATIVE_INFINITY;
   }
 
-  const before = evaluatePosition(simulated, options.team).total;
+  const before = stateTotal(options, simulated);
   const firstCommands: CommandMap = {
     [controlled.id]: actionIndexToCommand(options.actionIndex)
   };
@@ -249,7 +277,7 @@ function scoreTacticalActionSequencePair(
     stepWithOpponent(followupCommands);
   }
 
-  const after = evaluatePosition(simulated, options.team).total;
+  const after = stateTotal(options, simulated);
   const delta = evaluatePositionDelta(simulated, initial, options.team);
   const firstAction = actionIndexToCommand(options.actionIndex);
   const followupAction = actionIndexToCommand(options.followupActionIndex);

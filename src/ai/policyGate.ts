@@ -4,6 +4,8 @@ import {
   type EvaluationResult
 } from './neuralTraining';
 import { createNeuralStrategy, type NeuralDecisionTrace } from './neuralStrategy';
+import type { TacticalRolloutTuning } from './tacticalRollout';
+import type { ValueWeights } from './valueNetwork';
 import type { NeuralWeights } from './neuralWeights';
 import { POLICY_ACTION_COUNT } from './policyActions';
 import { traditionalStrategy } from './traditionalStrategy';
@@ -22,6 +24,9 @@ export type RuntimeEvaluationOptions = {
   frames?: number;
   tacticalRollout?: boolean;
   pairedStarts?: boolean;
+  /** Search-shape overrides, so a gate can score a variant on the exact gate path. */
+  tacticalTuning?: TacticalRolloutTuning;
+  valueWeights?: ValueWeights;
 };
 
 export type RuntimeEvaluationResult = EvaluationResult & {
@@ -457,6 +462,8 @@ function evaluateRuntimePolicyInternal(
     weights,
     name: 'neural-runtime-gate',
     tacticalRollout: options.tacticalRollout ?? true,
+    tacticalTuning: options.tacticalTuning,
+    valueWeights: options.valueWeights,
     onDecision: collectTrace ? (trace) => {
       recordDecisionTrace(traceTotals, trace);
       if (collectDecisionRecords) {
