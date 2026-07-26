@@ -23,6 +23,81 @@ const TANK_LATERAL_GRIP_ACCELERATION = 3600;
 const TANK_TRACK_ANGULAR_ACCELERATION = 90;
 const FULL_POWER_STAMINA_RATIO = 0.5;
 
+/**
+ * The collision geometry below is written into reusable buffers instead of fresh
+ * objects, and every expression keeps the exact operand order of the original
+ * allocating implementation, so trajectories stay bit-identical.
+ * `tests/simulationFingerprint.test.ts` pins that guarantee.
+ *
+ * This is not reentrant, which is safe because `stepGame` never invokes a
+ * strategy: match code decides commands first, then steps the world.
+ */
+
+const TANK_PART_COUNT = 3;
+const TANK_VERTEX_COUNT = 10;
+const TANK_PART_START = [0, 4, 7] as const;
+const TANK_PART_SIZE = [4, 3, 3] as const;
+const TANK_HULL_POINT_COUNT = 7;
+
+/**
+ * Separation guard for the bounding-box rejections. World coordinates stay
+ * under ~1e3 so double-precision projection error is around 1e-13; requiring a
+ * 1e-6 gap keeps an early exit from ever deciding a marginal contact that the
+ * full separating-axis test would have resolved differently.
+ */
+const BOUNDS_REJECT_GUARD = 1e-6;
+
+const tankVerticesA = new Float64Array(TANK_VERTEX_COUNT * 2);
+const tankVerticesB = new Float64Array(TANK_VERTEX_COUNT * 2);
+const tankPartBoundsA = new Float64Array(TANK_PART_COUNT * 4);
+const tankPartBoundsB = new Float64Array(TANK_PART_COUNT * 4);
+const tankHullLocals = new Float64Array(TANK_HULL_POINT_COUNT * 2);
+
+let hitNormalX = 0;
+let hitNormalY = 0;
+let hitPenetration = 0;
+
+let hullMinX = 0;
+let hullMaxX = 0;
+let hullMinY = 0;
+let hullMaxY = 0;
+
+/**
+ * Two-entry angle cache. A hit returns exactly the value `Math.cos`/`Math.sin`
+ * would return for the same angle, so results are unchanged; it only removes the
+ * thousands of duplicate trig calls the per-vertex transform used to make.
+ */
+let trigAngle0 = Number.NaN;
+let trigCos0 = 0;
+let trigSin0 = 0;
+let trigAngle1 = Number.NaN;
+let trigCos1 = 0;
+let trigSin1 = 0;
+let trigCos = 0;
+let trigSin = 0;
+
+function loadTrig(angle: number): void {
+  if (angle === trigAngle0) {
+    trigCos = trigCos0;
+    trigSin = trigSin0;
+    return;
+  }
+  if (angle === trigAngle1) {
+    trigCos = trigCos1;
+    trigSin = trigSin1;
+    return;
+  }
+
+  trigAngle1 = trigAngle0;
+  trigCos1 = trigCos0;
+  trigSin1 = trigSin0;
+  trigAngle0 = angle;
+  trigCos0 = Math.cos(angle);
+  trigSin0 = Math.sin(angle);
+  trigCos = trigCos0;
+  trigSin = trigSin0;
+}
+
 export function stepGame(state: GameState, commands: CommandMap, dt: number): void {
   state.lastGoal = null;
 
@@ -167,24 +242,73 @@ function limitTankVelocity(tank: Tank): void {
 }
 
 function enforceTankBounds(tank: Tank): void {
-  const bounds = tankWorldBounds(tank);
+  loadTankHullBounds(tank);
 
-  if (bounds.minX < 0) {
-    tank.position.x -= bounds.minX;
+  if (hullMinX < 0) {
+    tank.position.x -= hullMinX;
     tank.velocity.x = Math.max(0, -tank.velocity.x * TANK_WALL_RESTITUTION);
-  } else if (bounds.maxX > FIELD.length) {
-    tank.position.x -= bounds.maxX - FIELD.length;
+  } else if (hullMaxX > FIELD.length) {
+    tank.position.x -= hullMaxX - FIELD.length;
     tank.velocity.x = Math.min(0, -tank.velocity.x * TANK_WALL_RESTITUTION);
   }
 
-  const yBounds = tankWorldBounds(tank);
-  if (yBounds.minY < 0) {
-    tank.position.y -= yBounds.minY;
+  // The horizontal correction above only moves `position.x`, so the vertical
+  // extents are unchanged and can be reused instead of recomputed.
+  if (hullMinY < 0) {
+    tank.position.y -= hullMinY;
     tank.velocity.y = Math.max(0, -tank.velocity.y * TANK_WALL_RESTITUTION);
-  } else if (yBounds.maxY > FIELD.width) {
-    tank.position.y -= yBounds.maxY - FIELD.width;
+  } else if (hullMaxY > FIELD.width) {
+    tank.position.y -= hullMaxY - FIELD.width;
     tank.velocity.y = Math.min(0, -tank.velocity.y * TANK_WALL_RESTITUTION);
   }
+}
+
+function loadTankHullBounds(tank: Tank): void {
+  const halfLength = tank.length / 2;
+  const halfWidth = tank.width / 2;
+  const nose = tank.noseLength;
+
+  tankHullLocals[0] = -halfLength;
+  tankHullLocals[1] = -halfWidth;
+  tankHullLocals[2] = halfLength;
+  tankHullLocals[3] = -halfWidth;
+  tankHullLocals[4] = halfLength + nose;
+  tankHullLocals[5] = -halfWidth;
+  tankHullLocals[6] = halfLength;
+  tankHullLocals[7] = 0;
+  tankHullLocals[8] = halfLength + nose;
+  tankHullLocals[9] = halfWidth;
+  tankHullLocals[10] = halfLength;
+  tankHullLocals[11] = halfWidth;
+  tankHullLocals[12] = -halfLength;
+  tankHullLocals[13] = halfWidth;
+
+  loadTrig(tank.angle);
+  const cos = trigCos;
+  const sin = trigSin;
+  const originX = tank.position.x;
+  const originY = tank.position.y;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (let index = 0; index < TANK_HULL_POINT_COUNT; index += 1) {
+    const localX = tankHullLocals[index * 2];
+    const localY = tankHullLocals[index * 2 + 1];
+    const worldX = originX + cos * localX - sin * localY;
+    const worldY = originY + sin * localX + cos * localY;
+    minX = Math.min(minX, worldX);
+    maxX = Math.max(maxX, worldX);
+    minY = Math.min(minY, worldY);
+    maxY = Math.max(maxY, worldY);
+  }
+
+  hullMinX = minX;
+  hullMaxX = maxX;
+  hullMinY = minY;
+  hullMaxY = maxY;
 }
 
 function enforceBallBounds(state: GameState, allowScore: boolean): boolean {
@@ -226,30 +350,45 @@ function resolveTankTankCollisions(tanks: Tank[]): void {
     for (let j = i + 1; j < tanks.length; j += 1) {
       const a = tanks[i];
       const b = tanks[j];
-      const partsA = tankWorldConvexParts(a);
-      const partsB = tankWorldConvexParts(b);
+      // Both hulls are captured once per pair. The original implementation also
+      // built its vertex lists before resolving any part pair, so later part
+      // pairs intentionally test against pre-correction geometry.
+      writeTankGeometry(a, tankVerticesA, tankPartBoundsA);
+      writeTankGeometry(b, tankVerticesB, tankPartBoundsB);
 
       const invMassA = 1 / a.mass;
       const invMassB = 1 / b.mass;
       const invMassSum = invMassA + invMassB;
 
-      for (const partA of partsA) {
-        for (const partB of partsB) {
-          const collision = convexPolygonCollision(partA, partB);
-          if (!collision) {
+      for (let partA = 0; partA < TANK_PART_COUNT; partA += 1) {
+        for (let partB = 0; partB < TANK_PART_COUNT; partB += 1) {
+          if (partBoundsSeparated(tankPartBoundsA, partA, tankPartBoundsB, partB)) {
+            continue;
+          }
+          if (!satPartCollision(
+            tankVerticesA,
+            TANK_PART_START[partA],
+            TANK_PART_SIZE[partA],
+            tankVerticesB,
+            TANK_PART_START[partB],
+            TANK_PART_SIZE[partB]
+          )) {
             continue;
           }
 
-          const correction = Math.max(0, collision.penetration - POSITION_SLOP) / invMassSum;
-          a.position.x -= collision.normal.x * correction * invMassA;
-          a.position.y -= collision.normal.y * correction * invMassA;
-          b.position.x += collision.normal.x * correction * invMassB;
-          b.position.y += collision.normal.y * correction * invMassB;
+          const normalX = hitNormalX;
+          const normalY = hitNormalY;
+          const correction = Math.max(0, hitPenetration - POSITION_SLOP) / invMassSum;
+          a.position.x -= normalX * correction * invMassA;
+          a.position.y -= normalY * correction * invMassA;
+          b.position.x += normalX * correction * invMassB;
+          b.position.y += normalY * correction * invMassB;
 
           applyImpulse(
             a.velocity,
             b.velocity,
-            collision.normal,
+            normalX,
+            normalY,
             invMassA,
             invMassB,
             TANK_TANK_RESTITUTION
@@ -264,17 +403,21 @@ function resolveTankBallCollisions(state: GameState): void {
   const ball = state.ball;
 
   for (const tank of state.tanks) {
-    const collision = tankBallCollision(tank, ball.position, ball.radius);
-    if (!collision) {
+    if (!tankBallCollision(tank, ball.position.x, ball.position.y, ball.radius)) {
       continue;
     }
 
-    separateTankAndBall(state, tank, collision.normal, collision.penetration);
-    const correctedCollision = tankBallCollision(tank, ball.position, ball.radius);
+    const normalX = hitNormalX;
+    const normalY = hitNormalY;
+    const penetration = hitPenetration;
+
+    separateTankAndBall(state, tank, normalX, normalY, penetration);
+    const corrected = tankBallCollision(tank, ball.position.x, ball.position.y, ball.radius);
     applyImpulse(
       tank.velocity,
       ball.velocity,
-      correctedCollision?.normal ?? collision.normal,
+      corrected ? hitNormalX : normalX,
+      corrected ? hitNormalY : normalY,
       1 / tank.mass,
       1 / ball.mass,
       TANK_BALL_RESTITUTION
@@ -285,7 +428,8 @@ function resolveTankBallCollisions(state: GameState): void {
 function separateTankAndBall(
   state: GameState,
   tank: Tank,
-  normal: { x: number; y: number },
+  normalX: number,
+  normalY: number,
   overlap: number
 ): void {
   const ball = state.ball;
@@ -294,24 +438,28 @@ function separateTankAndBall(
   const invSum = invTank + invBall;
   const correction = Math.max(0, overlap - POSITION_SLOP) / invSum;
 
-  tank.position.x -= normal.x * correction * invTank;
-  tank.position.y -= normal.y * correction * invTank;
-  ball.position.x += normal.x * correction * invBall;
-  ball.position.y += normal.y * correction * invBall;
+  tank.position.x -= normalX * correction * invTank;
+  tank.position.y -= normalY * correction * invTank;
+  ball.position.x += normalX * correction * invBall;
+  ball.position.y += normalY * correction * invBall;
   enforceTankBounds(tank);
   enforceBallBounds(state, false);
 
-  const residual = tankBallCollision(tank, ball.position, ball.radius);
-  if (residual && residual.penetration > POSITION_SLOP) {
-    tank.position.x -= residual.normal.x * residual.penetration;
-    tank.position.y -= residual.normal.y * residual.penetration;
+  if (
+    tankBallCollision(tank, ball.position.x, ball.position.y, ball.radius) &&
+    hitPenetration > POSITION_SLOP
+  ) {
+    tank.position.x -= hitNormalX * hitPenetration;
+    tank.position.y -= hitNormalY * hitPenetration;
     enforceTankBounds(tank);
   }
 
-  const finalResidual = tankBallCollision(tank, ball.position, ball.radius);
-  if (finalResidual && finalResidual.penetration > POSITION_SLOP) {
-    ball.position.x += finalResidual.normal.x * finalResidual.penetration;
-    ball.position.y += finalResidual.normal.y * finalResidual.penetration;
+  if (
+    tankBallCollision(tank, ball.position.x, ball.position.y, ball.radius) &&
+    hitPenetration > POSITION_SLOP
+  ) {
+    ball.position.x += hitNormalX * hitPenetration;
+    ball.position.y += hitNormalY * hitPenetration;
     enforceBallBounds(state, false);
   }
 }
@@ -319,189 +467,291 @@ function separateTankAndBall(
 function applyImpulse(
   velocityA: Vec2,
   velocityB: Vec2,
-  normal: { x: number; y: number },
+  normalX: number,
+  normalY: number,
   invMassA: number,
   invMassB: number,
   restitution: number
 ): void {
-  const relativeVelocity = {
-    x: velocityB.x - velocityA.x,
-    y: velocityB.y - velocityA.y
-  };
-  const speedAlongNormal = relativeVelocity.x * normal.x + relativeVelocity.y * normal.y;
+  const relativeVelocityX = velocityB.x - velocityA.x;
+  const relativeVelocityY = velocityB.y - velocityA.y;
+  const speedAlongNormal = relativeVelocityX * normalX + relativeVelocityY * normalY;
 
   if (speedAlongNormal > 0) {
     return;
   }
 
   const impulseMagnitude = -(1 + restitution) * speedAlongNormal / (invMassA + invMassB);
-  const impulse = {
-    x: impulseMagnitude * normal.x,
-    y: impulseMagnitude * normal.y
-  };
+  const impulseX = impulseMagnitude * normalX;
+  const impulseY = impulseMagnitude * normalY;
 
-  velocityA.x -= impulse.x * invMassA;
-  velocityA.y -= impulse.y * invMassA;
-  velocityB.x += impulse.x * invMassB;
-  velocityB.y += impulse.y * invMassB;
+  velocityA.x -= impulseX * invMassA;
+  velocityA.y -= impulseY * invMassA;
+  velocityB.x += impulseX * invMassB;
+  velocityB.y += impulseY * invMassB;
 }
 
-function convexPolygonCollision(a: Vec2[], b: Vec2[]): { normal: Vec2; penetration: number } | null {
-  let bestAxis: Vec2 | null = null;
+/**
+ * Writes the tank's three convex parts into `vertices` as interleaved world
+ * coordinates and records a per-part bounding box for cheap rejection. Vertex
+ * order matches the original part list exactly, because the separating-axis
+ * result depends on edge order.
+ */
+function writeTankGeometry(tank: Tank, vertices: Float64Array, partBounds: Float64Array): void {
+  const halfLength = tank.length / 2;
+  const halfWidth = tank.width / 2;
+  const nose = tank.noseLength;
+
+  loadTrig(tank.angle);
+  const cos = trigCos;
+  const sin = trigSin;
+  const originX = tank.position.x;
+  const originY = tank.position.y;
+
+  writeVertex(vertices, 0, originX, originY, cos, sin, -halfLength, -halfWidth);
+  writeVertex(vertices, 1, originX, originY, cos, sin, halfLength, -halfWidth);
+  writeVertex(vertices, 2, originX, originY, cos, sin, halfLength, halfWidth);
+  writeVertex(vertices, 3, originX, originY, cos, sin, -halfLength, halfWidth);
+
+  writeVertex(vertices, 4, originX, originY, cos, sin, halfLength, -halfWidth);
+  writeVertex(vertices, 5, originX, originY, cos, sin, halfLength + nose, -halfWidth);
+  writeVertex(vertices, 6, originX, originY, cos, sin, halfLength, 0);
+
+  writeVertex(vertices, 7, originX, originY, cos, sin, halfLength, 0);
+  writeVertex(vertices, 8, originX, originY, cos, sin, halfLength + nose, halfWidth);
+  writeVertex(vertices, 9, originX, originY, cos, sin, halfLength, halfWidth);
+
+  for (let part = 0; part < TANK_PART_COUNT; part += 1) {
+    const start = TANK_PART_START[part];
+    const size = TANK_PART_SIZE[part];
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < size; index += 1) {
+      const x = vertices[(start + index) * 2];
+      const y = vertices[(start + index) * 2 + 1];
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+    partBounds[part * 4] = minX;
+    partBounds[part * 4 + 1] = minY;
+    partBounds[part * 4 + 2] = maxX;
+    partBounds[part * 4 + 3] = maxY;
+  }
+}
+
+function writeVertex(
+  vertices: Float64Array,
+  index: number,
+  originX: number,
+  originY: number,
+  cos: number,
+  sin: number,
+  localX: number,
+  localY: number
+): void {
+  vertices[index * 2] = originX + cos * localX - sin * localY;
+  vertices[index * 2 + 1] = originY + sin * localX + cos * localY;
+}
+
+/**
+ * Convex parts separated by more than the guard band cannot intersect, so the
+ * separating-axis test would report no collision for them.
+ */
+function partBoundsSeparated(
+  boundsA: Float64Array,
+  partA: number,
+  boundsB: Float64Array,
+  partB: number
+): boolean {
+  const a = partA * 4;
+  const b = partB * 4;
+  return boundsA[a + 2] + BOUNDS_REJECT_GUARD < boundsB[b] ||
+    boundsB[b + 2] + BOUNDS_REJECT_GUARD < boundsA[a] ||
+    boundsA[a + 3] + BOUNDS_REJECT_GUARD < boundsB[b + 1] ||
+    boundsB[b + 3] + BOUNDS_REJECT_GUARD < boundsA[a + 1];
+}
+
+function satPartCollision(
+  verticesA: Float64Array,
+  startA: number,
+  countA: number,
+  verticesB: Float64Array,
+  startB: number,
+  countB: number
+): boolean {
+  let bestAxisX = 0;
+  let bestAxisY = 0;
+  let hasBestAxis = false;
   let bestOverlap = Number.POSITIVE_INFINITY;
-  const axes = [...polygonAxes(a), ...polygonAxes(b)];
-  const centerA = polygonCentroid(a);
-  const centerB = polygonCentroid(b);
-  const centerDelta = {
-    x: centerB.x - centerA.x,
-    y: centerB.y - centerA.y
-  };
 
-  for (const axis of axes) {
-    const projectionA = projectPoints(a, axis);
-    const projectionB = projectPoints(b, axis);
-    const overlap = Math.min(projectionA.max, projectionB.max) -
-      Math.max(projectionA.min, projectionB.min);
+  let centerSumAX = 0;
+  let centerSumAY = 0;
+  for (let index = 0; index < countA; index += 1) {
+    centerSumAX += verticesA[(startA + index) * 2];
+    centerSumAY += verticesA[(startA + index) * 2 + 1];
+  }
+  let centerSumBX = 0;
+  let centerSumBY = 0;
+  for (let index = 0; index < countB; index += 1) {
+    centerSumBX += verticesB[(startB + index) * 2];
+    centerSumBY += verticesB[(startB + index) * 2 + 1];
+  }
+  const centerDeltaX = centerSumBX / countB - centerSumAX / countA;
+  const centerDeltaY = centerSumBY / countB - centerSumAY / countA;
 
+  const axisCount = countA + countB;
+  for (let axisIndex = 0; axisIndex < axisCount; axisIndex += 1) {
+    const fromA = axisIndex < countA;
+    const source = fromA ? verticesA : verticesB;
+    const sourceStart = fromA ? startA : startB;
+    const sourceCount = fromA ? countA : countB;
+    const edgeIndex = fromA ? axisIndex : axisIndex - countA;
+    const edgeStart = (sourceStart + edgeIndex) * 2;
+    const edgeEnd = (sourceStart + ((edgeIndex + 1) % sourceCount)) * 2;
+    const edgeX = source[edgeEnd] - source[edgeStart];
+    const edgeY = source[edgeEnd + 1] - source[edgeStart + 1];
+    const edgeLength = Math.hypot(edgeX, edgeY) || 1;
+    const axisX = edgeY / edgeLength;
+    const axisY = -edgeX / edgeLength;
+
+    let minA = Number.POSITIVE_INFINITY;
+    let maxA = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < countA; index += 1) {
+      const value = verticesA[(startA + index) * 2] * axisX +
+        verticesA[(startA + index) * 2 + 1] * axisY;
+      minA = Math.min(minA, value);
+      maxA = Math.max(maxA, value);
+    }
+    let minB = Number.POSITIVE_INFINITY;
+    let maxB = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < countB; index += 1) {
+      const value = verticesB[(startB + index) * 2] * axisX +
+        verticesB[(startB + index) * 2 + 1] * axisY;
+      minB = Math.min(minB, value);
+      maxB = Math.max(maxB, value);
+    }
+
+    const overlap = Math.min(maxA, maxB) - Math.max(minA, minB);
     if (overlap <= 0) {
-      return null;
+      return false;
     }
 
     if (overlap < bestOverlap) {
-      const direction = centerDelta.x * axis.x + centerDelta.y * axis.y >= 0 ? 1 : -1;
-      bestAxis = {
-        x: axis.x * direction,
-        y: axis.y * direction
-      };
+      const direction = centerDeltaX * axisX + centerDeltaY * axisY >= 0 ? 1 : -1;
+      bestAxisX = axisX * direction;
+      bestAxisY = axisY * direction;
+      hasBestAxis = true;
       bestOverlap = overlap;
     }
   }
 
-  if (!bestAxis) {
-    return null;
+  if (!hasBestAxis) {
+    return false;
   }
 
-  return {
-    normal: bestAxis,
-    penetration: bestOverlap
-  };
+  hitNormalX = bestAxisX;
+  hitNormalY = bestAxisY;
+  hitPenetration = bestOverlap;
+  return true;
 }
 
 function tankBallCollision(
   tank: Tank,
-  ballPosition: Vec2,
+  ballX: number,
+  ballY: number,
   ballRadius: number
-): { normal: Vec2; penetration: number } | null {
-  let best: { normal: Vec2; penetration: number } | null = null;
+): boolean {
+  writeTankGeometry(tank, tankVerticesA, tankPartBoundsA);
 
-  for (const part of tankWorldConvexParts(tank)) {
-    const collision = circlePolygonCollision(ballPosition, ballRadius, part);
-    if (!collision) {
+  let found = false;
+  let bestNormalX = 0;
+  let bestNormalY = 0;
+  let bestPenetration = 0;
+
+  for (let part = 0; part < TANK_PART_COUNT; part += 1) {
+    if (circleBoundsSeparated(tankPartBoundsA, part, ballX, ballY, ballRadius)) {
       continue;
     }
-    if (!best || collision.penetration > best.penetration) {
-      best = collision;
+    if (!circlePartCollision(
+      tankVerticesA,
+      TANK_PART_START[part],
+      TANK_PART_SIZE[part],
+      ballX,
+      ballY,
+      ballRadius
+    )) {
+      continue;
+    }
+    if (!found || hitPenetration > bestPenetration) {
+      found = true;
+      bestNormalX = hitNormalX;
+      bestNormalY = hitNormalY;
+      bestPenetration = hitPenetration;
     }
   }
 
-  return best;
-}
-
-function tankWorldConvexParts(tank: Tank): Vec2[][] {
-  return tankLocalConvexParts(tank).map((part) =>
-    part.map((point) => tankLocalPointToWorld(tank, point))
-  );
-}
-
-function tankLocalConvexParts(tank: Tank): Vec2[][] {
-  const halfLength = tank.length / 2;
-  const halfWidth = tank.width / 2;
-  const nose = tank.noseLength;
-
-  return [
-    [
-      { x: -halfLength, y: -halfWidth },
-      { x: halfLength, y: -halfWidth },
-      { x: halfLength, y: halfWidth },
-      { x: -halfLength, y: halfWidth }
-    ],
-    [
-      { x: halfLength, y: -halfWidth },
-      { x: halfLength + nose, y: -halfWidth },
-      { x: halfLength, y: 0 }
-    ],
-    [
-      { x: halfLength, y: 0 },
-      { x: halfLength + nose, y: halfWidth },
-      { x: halfLength, y: halfWidth }
-    ]
-  ];
-}
-
-function tankLocalHullPoints(tank: Tank): Vec2[] {
-  const halfLength = tank.length / 2;
-  const halfWidth = tank.width / 2;
-  const nose = tank.noseLength;
-
-  return [
-    { x: -halfLength, y: -halfWidth },
-    { x: halfLength, y: -halfWidth },
-    { x: halfLength + nose, y: -halfWidth },
-    { x: halfLength, y: 0 },
-    { x: halfLength + nose, y: halfWidth },
-    { x: halfLength, y: halfWidth },
-    { x: -halfLength, y: halfWidth }
-  ];
-}
-
-function tankWorldBounds(tank: Tank): {
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-} {
-  let minX = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-
-  for (const point of tankLocalHullPoints(tank)) {
-    const world = tankLocalPointToWorld(tank, point);
-    minX = Math.min(minX, world.x);
-    maxX = Math.max(maxX, world.x);
-    minY = Math.min(minY, world.y);
-    maxY = Math.max(maxY, world.y);
+  if (!found) {
+    return false;
   }
 
-  return { minX, maxX, minY, maxY };
+  hitNormalX = bestNormalX;
+  hitNormalY = bestNormalY;
+  hitPenetration = bestPenetration;
+  return true;
 }
 
-function tankLocalPointToWorld(tank: Tank, point: Vec2): Vec2 {
-  return {
-    x: tank.position.x + Math.cos(tank.angle) * point.x - Math.sin(tank.angle) * point.y,
-    y: tank.position.y + Math.sin(tank.angle) * point.x + Math.cos(tank.angle) * point.y
-  };
+/**
+ * A circle whose expanded box clears the part's box is farther than `radius`
+ * from every edge and is outside the part, which is exactly the case the full
+ * circle/polygon test rejects.
+ */
+function circleBoundsSeparated(
+  partBounds: Float64Array,
+  part: number,
+  centerX: number,
+  centerY: number,
+  radius: number
+): boolean {
+  const base = part * 4;
+  return centerX - radius > partBounds[base + 2] + BOUNDS_REJECT_GUARD ||
+    centerX + radius < partBounds[base] - BOUNDS_REJECT_GUARD ||
+    centerY - radius > partBounds[base + 3] + BOUNDS_REJECT_GUARD ||
+    centerY + radius < partBounds[base + 1] - BOUNDS_REJECT_GUARD;
 }
 
-function circlePolygonCollision(
-  center: Vec2,
-  radius: number,
-  polygon: Vec2[]
-): { normal: Vec2; penetration: number } | null {
-  let closestPoint = polygon[0];
+function circlePartCollision(
+  vertices: Float64Array,
+  start: number,
+  count: number,
+  centerX: number,
+  centerY: number,
+  radius: number
+): boolean {
+  let closestPointX = vertices[start * 2];
+  let closestPointY = vertices[start * 2 + 1];
   let closestDistance = Number.POSITIVE_INFINITY;
-  let closestEdgeNormal = { x: 1, y: 0 };
+  let closestEdgeNormalX = 1;
+  let closestEdgeNormalY = 0;
   let closestInsideDistance = Number.POSITIVE_INFINITY;
-  let closestInsideNormal = { x: 1, y: 0 };
+  let closestInsideNormalX = 1;
+  let closestInsideNormalY = 0;
   let inside = true;
 
-  for (let index = 0; index < polygon.length; index += 1) {
-    const start = polygon[index];
-    const end = polygon[(index + 1) % polygon.length];
-    const edge = { x: end.x - start.x, y: end.y - start.y };
-    const edgeLength = Math.hypot(edge.x, edge.y) || 1;
-    const outward = { x: edge.y / edgeLength, y: -edge.x / edgeLength };
-    const signedDistance = (center.x - start.x) * outward.x + (center.y - start.y) * outward.y;
+  for (let index = 0; index < count; index += 1) {
+    const edgeStart = (start + index) * 2;
+    const edgeEnd = (start + ((index + 1) % count)) * 2;
+    const startX = vertices[edgeStart];
+    const startY = vertices[edgeStart + 1];
+    const edgeX = vertices[edgeEnd] - startX;
+    const edgeY = vertices[edgeEnd + 1] - startY;
+    const edgeLength = Math.hypot(edgeX, edgeY) || 1;
+    const outwardX = edgeY / edgeLength;
+    const outwardY = -edgeX / edgeLength;
+    const signedDistance = (centerX - startX) * outwardX + (centerY - startY) * outwardY;
 
     if (signedDistance > 0) {
       inside = false;
@@ -510,91 +760,46 @@ function circlePolygonCollision(
     const insideDistance = Math.abs(signedDistance);
     if (insideDistance < closestInsideDistance) {
       closestInsideDistance = insideDistance;
-      closestInsideNormal = outward;
+      closestInsideNormalX = outwardX;
+      closestInsideNormalY = outwardY;
     }
 
-    const point = closestPointOnSegment(center, start, end);
-    const pointDistance = distance(center, point);
+    const lengthSquared = edgeX * edgeX + edgeY * edgeY || 1;
+    const t = clamp(((centerX - startX) * edgeX + (centerY - startY) * edgeY) / lengthSquared, 0, 1);
+    const pointX = startX + edgeX * t;
+    const pointY = startY + edgeY * t;
+    const pointDistance = Math.hypot(centerX - pointX, centerY - pointY);
     if (pointDistance < closestDistance) {
       closestDistance = pointDistance;
-      closestPoint = point;
-      closestEdgeNormal = outward;
+      closestPointX = pointX;
+      closestPointY = pointY;
+      closestEdgeNormalX = outwardX;
+      closestEdgeNormalY = outwardY;
     }
   }
 
   if (inside) {
-    return {
-      normal: closestInsideNormal,
-      penetration: radius + closestInsideDistance
-    };
+    hitNormalX = closestInsideNormalX;
+    hitNormalY = closestInsideNormalY;
+    hitPenetration = radius + closestInsideDistance;
+    return true;
   }
 
   if (closestDistance >= radius) {
-    return null;
+    return false;
   }
 
   if (closestDistance <= EPSILON) {
-    return {
-      normal: closestEdgeNormal,
-      penetration: radius
-    };
+    hitNormalX = closestEdgeNormalX;
+    hitNormalY = closestEdgeNormalY;
+    hitPenetration = radius;
+    return true;
   }
 
-  return {
-    normal: {
-      x: (center.x - closestPoint.x) / closestDistance,
-      y: (center.y - closestPoint.y) / closestDistance
-    },
-    penetration: radius - closestDistance
-  };
-}
-
-function closestPointOnSegment(point: Vec2, start: Vec2, end: Vec2): Vec2 {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy || 1;
-  const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
-
-  return {
-    x: start.x + dx * t,
-    y: start.y + dy * t
-  };
-}
-
-function polygonAxes(points: Vec2[]): Vec2[] {
-  return points.map((start, index) => {
-    const end = points[(index + 1) % points.length];
-    const edge = { x: end.x - start.x, y: end.y - start.y };
-    const length = Math.hypot(edge.x, edge.y) || 1;
-    return { x: edge.y / length, y: -edge.x / length };
-  });
-}
-
-function projectPoints(points: Vec2[], axis: Vec2): { min: number; max: number } {
-  let min = Number.POSITIVE_INFINITY;
-  let max = Number.NEGATIVE_INFINITY;
-  for (const point of points) {
-    const value = point.x * axis.x + point.y * axis.y;
-    min = Math.min(min, value);
-    max = Math.max(max, value);
-  }
-  return { min, max };
-}
-
-function polygonCentroid(points: Vec2[]): Vec2 {
-  const sum = points.reduce(
-    (total, point) => ({ x: total.x + point.x, y: total.y + point.y }),
-    { x: 0, y: 0 }
-  );
-
-  return {
-    x: sum.x / points.length,
-    y: sum.y / points.length
-  };
-}
-
-function distance(a: Vec2, b: Vec2): number {
-  return Math.hypot(a.x - b.x, a.y - b.y);
+  hitNormalX = (centerX - closestPointX) / closestDistance;
+  hitNormalY = (centerY - closestPointY) / closestDistance;
+  hitPenetration = radius - closestDistance;
+  return true;
 }
 
 function scoreGoal(state: GameState, team: 'red' | 'blue'): void {
