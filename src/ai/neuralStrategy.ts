@@ -10,7 +10,7 @@ import {
   defaultNeuralWeights,
   type NeuralWeights
 } from './neuralWeights';
-import { chooseTacticalAction } from './tacticalRollout';
+import { chooseTacticalAction, type TacticalRolloutTuning } from './tacticalRollout';
 
 const STAMINA_CONSERVE_RATIO = 0.58;
 const CRITICAL_STAMINA_RATIO = 0.22;
@@ -21,6 +21,7 @@ export type NeuralStrategyOptions = {
   weights?: NeuralWeights | (() => NeuralWeights);
   name?: string;
   tacticalRollout?: boolean;
+  tacticalTuning?: TacticalRolloutTuning;
   onDecision?: (trace: NeuralDecisionTrace) => void;
 };
 
@@ -105,7 +106,10 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
           state,
           team,
           evaluateTankNetwork(state, team, tank, resolveWeights()),
-          tacticalRollout && shouldUseTacticalRollout(state, team, tank, pressures)
+          tacticalRollout &&
+            (options.tacticalTuning?.forceTrigger === true ||
+              shouldUseTacticalRollout(state, team, tank, pressures)),
+          options.tacticalTuning
         );
       const command = decision.command;
       const regulatedCommand = regulateCriticalStaminaCommand(state, team, tank, pressures, command);
@@ -770,7 +774,8 @@ function policyOutputToDecision(
   state: Readonly<GameState>,
   team: Team,
   logits: readonly number[],
-  useTacticalRollout: boolean
+  useTacticalRollout: boolean,
+  tacticalTuning?: TacticalRolloutTuning
 ): {
   command: TankCommand;
   policyActionIndex?: number;
@@ -808,7 +813,8 @@ function policyOutputToDecision(
   const bestIndex = chooseTacticalAction({
     state,
     team,
-    policyActionIndex
+    policyActionIndex,
+    tuning: tacticalTuning
   });
 
   return {

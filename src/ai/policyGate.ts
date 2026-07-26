@@ -843,7 +843,7 @@ function distributionChangeCount(candidate: readonly number[], current: readonly
     .reduce((total, count) => total + Math.abs(count), 0) / 2;
 }
 
-function createSeededInitialState(seed: number, match: number, team: Team): GameState {
+export function createSeededInitialState(seed: number, match: number, team: Team): GameState {
   const random = createSeededRandom(seed + match * 4099);
   const state = createInitialState();
   const attackFrameX = FIELD.length / 2 + (random() - 0.5) * FIELD.length * 0.12;

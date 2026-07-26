@@ -28,6 +28,23 @@ declare module 'node:child_process' {
 
 declare module 'node:os' {
   export function tmpdir(): string;
+  export function cpus(): unknown[];
+}
+
+declare module 'node:worker_threads' {
+  export class Worker {
+    constructor(filename: string | URL, options?: { workerData?: unknown });
+    on(event: 'message', listener: (value: never) => void): void;
+    on(event: 'error', listener: (error: Error) => void): void;
+    on(event: 'exit', listener: (code: number) => void): void;
+    terminate(): Promise<number>;
+  }
+
+  export const isMainThread: boolean;
+  export const workerData: unknown;
+  export const parentPort: {
+    postMessage(value: unknown): void;
+  } | null;
 }
 
 declare module 'node:path' {

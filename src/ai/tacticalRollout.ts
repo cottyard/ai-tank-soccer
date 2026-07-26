@@ -12,6 +12,25 @@ export type TacticalActionChoice = {
   actionScores: number[];
 };
 
+/**
+ * Search-shape overrides.
+ *
+ * The horizons below were chosen when a single physics frame cost ~150us, which
+ * made deep search unaffordable inside a 5Hz browser decision budget. Exposing
+ * them lets the large-sample benchmark decide the depth empirically instead of
+ * inheriting a limit that came from the old kernel's speed.
+ */
+export type TacticalRolloutTuning = {
+  defaultFrames?: number;
+  improvementMargin?: number;
+  /**
+   * Bypass `shouldUseTacticalRollout` and search on every decision. Read by the
+   * strategy wrapper rather than by the search itself; it exists so the trigger
+   * heuristic can be measured as a hypothesis instead of assumed.
+   */
+  forceTrigger?: boolean;
+};
+
 export type TacticalActionOptions = {
   state: Readonly<GameState>;
   team: Team;
@@ -19,6 +38,7 @@ export type TacticalActionOptions = {
   opponentActionIndex?: number;
   rolloutFrames?: number;
   improvementMargin?: number;
+  tuning?: TacticalRolloutTuning;
 };
 
 const DEFAULT_ROLLOUT_FRAMES = 18;
@@ -77,7 +97,9 @@ export function chooseTacticalAction(options: TacticalActionOptions): TacticalAc
     }
   }
 
-  const margin = options.improvementMargin ?? DEFAULT_IMPROVEMENT_MARGIN;
+  const margin = options.improvementMargin ??
+    options.tuning?.improvementMargin ??
+    DEFAULT_IMPROVEMENT_MARGIN;
   const actionIndex = best.score > policyScore + margin
     ? best.actionIndex
     : policyActionIndex;
@@ -101,7 +123,7 @@ function defaultRolloutFrames(options: TacticalActionOptions): number {
 
   return isSlowPinnedAttackingCorner(options.state, options.team)
     ? PINNED_ATTACK_CORNER_ROLLOUT_FRAMES
-    : DEFAULT_ROLLOUT_FRAMES;
+    : options.tuning?.defaultFrames ?? DEFAULT_ROLLOUT_FRAMES;
 }
 
 type ScoreOptions = TacticalActionOptions & {
