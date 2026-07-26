@@ -45,7 +45,9 @@ The 20-match verdict was noise. Note also that the honest figure on those seeds 
 
 **Tactical rollout.** Strongly load-bearing, not overfitting. Against `traditional` over 800 matches it scores `0.7331 +-0.0190` against `0.4794 +-0.0128` with rollout disabled.
 
-**A learned value function, blended.** `src/ai/valueNetwork.ts` regresses the signed, time-discounted identity of the next goal from the same 36 team-relative inputs the policy uses. Trained on 180000 Monte-Carlo samples it explains `64.8%` of holdout outcome variance. Blended at `0.08` into the rollout's terminal score it beats the previous accepted runtime `0.5189`, CI `[0.5096,0.5282]` over 1400 matches, replicated from `0.5288` on an independent sample, and improves play against `traditional` from `0.7512` to `0.7781`, paired delta `+0.0269`, CI `[0.0103,0.0434]`.
+**A learned value function, blended.** `src/ai/valueNetwork.ts` regresses the signed, time-discounted identity of the next goal from the same 36 team-relative inputs the policy uses. Trained on Monte-Carlo playout labels it explains about `65%` of holdout outcome variance. Blended at `0.08` into the rollout's terminal score, generation 1 beat the pre-value runtime `0.5189`, CI `[0.5096,0.5282]` over 1400 matches, replicated on an independent sample, and improved play against `traditional` from `0.7512` to `0.7781`, paired delta `+0.0269`, CI `[0.0103,0.0434]`.
+
+**Iterating the loop.** Relabelling with the freshly promoted runtime, retraining, and re-benchmarking beat generation 1 again: `0.5200`, CI `[0.5081,0.5319]`, replicated at `0.5186`, CI `[0.5093,0.5279]` over 1400 matches. Nothing changed but the labelling policy. This relabel-retrain-promote cycle is the project's self-improvement mechanism and is the cheapest known source of further gain.
 
 ## What Is Measured Dead
 
@@ -55,6 +57,8 @@ Do not retry these without changing the underlying premise. Each was measured wi
 - **Searching everywhere.** Bypassing `shouldUseTacticalRollout` scores `0.4738`, goals `62-83`. The trigger heuristic is protective. Midfield rollout was separately catastrophic at every improvement margin tried.
 - **A reacting opponent inside rollout.** The search plans against a stationary opponent, because only the controlled tank gets a command and `sanitizeCommand` hands the opponent a full stop. Modelling the opponent as the same network re-deciding at 5Hz is a strictly better transition model and bought nothing: `0.5075`, CI `[0.4919,0.5231]`.
 - **A purely learned terminal value.** Scores `0.3775`, goals `27-182`. Outcome prediction has almost no gradient over an 18-frame horizon, and the search actively seeks states where the model is wrong. The heuristic must supply dense local shaping; the learned model is only useful as a small blended correction.
+- **Committed-action exploration for value labels.** Holding a random action for a whole rollout horizon during data generation was meant to match the states the search actually queries. It halved the label variance instead (`0.0346` against `0.0696`): disrupting play that hard stops goals happening, so the labels stop carrying outcome signal. The resulting model was worse at every blend. Fix the state distribution without destroying the outcomes.
+- **Raising the blend weight.** `0.25` and `0.5` are both measurably worse than `0.08`, monotonically. The blend is a measured ceiling, not an untuned default.
 - **Broad position-evaluation surgery.** Lowering the zero-speed `finishThreatScore` floor, narrowing the attacking-corner reward, and penalising deep non-scoring finish states each regressed the gate.
 - **Direct action guards for individual stuck matches.** Near-goal finish-stall bonuses, force-forward rules, near-miss scoring, and follow-through guards produced local movement without match conversion.
 
@@ -123,8 +127,8 @@ Diagnostics: `scripts/diagnose-runtime-failures.ts`, `scripts/inspect-runtime-ma
 
 ## Next Work
 
-1. **Improve the value model, since it is the one lever that moved.** The blend is capped at `0.08` because a pure learned value collapses. Raising the usable blend weight is the direct path to a stronger AI. Likely routes: train on states drawn from rollout terminal distributions rather than on-policy play, so the model is accurate where the search actually queries it; predict a longer-horizon return; or add the heuristic's breakdown terms as inputs so the network only has to learn the correction.
-2. **Retrain the value model against the promoted policy.** The current model was labelled by the pre-promotion runtime, so it is already one generation stale. Iterating this label-train-promote loop is the closest thing this project has to self-improvement.
+1. **Run another generation of the relabel-retrain-promote loop.** It has now paid twice, costs about ten minutes of compute, and needs no new ideas. Diminishing returns are expected eventually; measure rather than assume.
+2. **Raise the usable blend weight by making the learned value trustworthy off-policy.** The blend is pinned at `0.08` because the search hunts states where the model is wrong. Committed-action exploration failed because it destroyed the labels, so try instead: label forked rollout-terminal states by a separate short playout, so the state distribution matches without disturbing the match; or feed the heuristic's breakdown terms in as inputs so the network only learns a correction and degrades to the heuristic where it has no data.
 3. **Ablate the accumulated heuristic constants on the benchmark.** Many were fitted to individual matches on the 20-match gate and cannot have been resolvable. Remove the ones that do not survive; expect several to be neutral.
 4. **Do not spend effort on rollout depth, trigger coverage, or another guarded rule.** See what is measured dead.
 5. Native or WASM porting is not justified for the playable AI while runtime headroom is ~100x. Revisit only if offline label generation becomes the throughput constraint, and only with cross-language parity added to the fingerprint suite.

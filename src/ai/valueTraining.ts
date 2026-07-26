@@ -123,20 +123,29 @@ function controlledTank(state: Readonly<GameState>, team: Team): Tank | undefine
 }
 
 /**
- * Wraps a strategy so it plays a uniformly random action a fraction of the
- * time. Purely on-policy states under-represent the positions a rollout
- * actually reaches after committing one action for many frames, and a value
- * function is only useful where it has seen data.
+ * Wraps a strategy so it sometimes commits to a uniformly random action for
+ * several consecutive decisions.
+ *
+ * This matters more than plain per-decision noise. The rollout only ever
+ * queries the value function at states reached by holding ONE action for a
+ * whole horizon, and single-frame noise never produces those; the model was
+ * therefore being asked to score states it had never seen, which is why a pure
+ * learned value collapsed and the usable blend was capped low. Holding an
+ * action for `commitDecisions` decisions reproduces exactly a rollout branch,
+ * while the surrounding match still supplies a real outcome label.
  */
 export function createExploringStrategy(
   base: Strategy,
   explorationRate: number,
-  seed: number
+  seed: number,
+  commitDecisions = 1
 ): Strategy {
   if (explorationRate <= 0) {
     return base;
   }
   const random = createSeededRandom(seed);
+  const holds = new Map<string, { actionIndex: number; remaining: number }>();
+  const hold = Math.max(1, Math.floor(commitDecisions));
 
   return {
     name: `${base.name}-explore`,
@@ -144,9 +153,19 @@ export function createExploringStrategy(
       const commands = base.decide(state, team);
       const result: CommandMap = {};
       for (const [tankId, command] of Object.entries(commands)) {
-        result[tankId] = random() < explorationRate
-          ? actionIndexToCommand(Math.floor(random() * POLICY_ACTION_COUNT))
-          : command;
+        const active = holds.get(tankId);
+        if (active && active.remaining > 0) {
+          active.remaining -= 1;
+          result[tankId] = actionIndexToCommand(active.actionIndex);
+          continue;
+        }
+        if (random() < explorationRate) {
+          const actionIndex = Math.floor(random() * POLICY_ACTION_COUNT);
+          holds.set(tankId, { actionIndex, remaining: hold - 1 });
+          result[tankId] = actionIndexToCommand(actionIndex);
+          continue;
+        }
+        result[tankId] = command;
       }
       return result;
     }

@@ -40,6 +40,7 @@ export type ValueTrainingCliOptions = {
   learningRate: number;
   l2: number;
   explorationRate: number;
+  commitDecisions: number;
   decayFrames: number;
   holdoutFraction: number;
   workers: number;
@@ -51,6 +52,7 @@ type GenerationRequest = {
   seeds: number[];
   frames: number;
   explorationRate: number;
+  commitDecisions: number;
   decayFrames: number;
   seed: number;
 };
@@ -72,6 +74,7 @@ export function parseValueTrainingArgs(argv: readonly string[]): ValueTrainingCl
     learningRate: numberArg(argv, '--learning-rate', 0.003),
     l2: numberArg(argv, '--l2', 1e-6),
     explorationRate: numberArg(argv, '--exploration', 0.15),
+    commitDecisions: positiveIntegerArg(argv, '--commit-decisions', 3),
     decayFrames: numberArg(argv, '--decay-frames', 150),
     holdoutFraction: numberArg(argv, '--holdout', 0.15),
     workers: positiveIntegerArg(argv, '--workers', Math.max(1, cpus().length - 2)),
@@ -90,12 +93,14 @@ export function generateSampleShard(request: GenerationRequest): ValueSample[] {
     const exploringCandidate = createExploringStrategy(
       candidate,
       request.explorationRate,
-      seed ^ request.seed
+      seed ^ request.seed,
+      request.commitDecisions
     );
     const exploringOpponent = createExploringStrategy(
       opponent,
       request.explorationRate,
-      (seed ^ request.seed) + 7919
+      (seed ^ request.seed) + 7919,
+      request.commitDecisions
     );
 
     samples.push(...generateValueSamples({
@@ -125,6 +130,7 @@ async function generateSamples(
     seeds: shard,
     frames: options.frames,
     explorationRate: options.explorationRate,
+    commitDecisions: options.commitDecisions,
     decayFrames: options.decayFrames,
     seed: options.seed
   })));

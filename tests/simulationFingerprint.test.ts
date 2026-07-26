@@ -21,11 +21,10 @@ import { loadWeightsPayload } from '../scripts/coach-neural';
  * re-baseline every gate number in project.md, because all historical results
  * become incomparable.
  *
- * The runtime digests were re-baselined once, when the learned value model was
- * promoted into the rollout's terminal score. That promotion changed decisions
- * and therefore trajectories, which is why two of the three moved while every
- * physics digest stayed identical - exactly the signature an AI-only change
- * should have.
+ * The runtime digests are re-baselined whenever the learned value model is
+ * promoted, because that changes decisions and therefore trajectories. Each such
+ * promotion must move only runtime digests and leave every physics digest
+ * identical, which is the signature an AI-only change should have.
  */
 
 const PHYSICS_DIGESTS: Record<string, string> = {
@@ -42,12 +41,12 @@ const PHYSICS_DIGESTS: Record<string, string> = {
 };
 
 const RUNTIME_DIGESTS: Record<string, string> = {
-  'runtime/seed-19': 'df5ec1fb09d7604e',
+  'runtime/seed-19': '260134b087503bc9',
   'runtime/seed-31': 'd80e33c46e79ea4a',
-  'runtime/seed-71': 'bac35062e5ef015f'
+  'runtime/seed-71': 'cc76a10fd0ad612a'
 };
 
-const COMBINED_DIGEST = 'c8794325caf73210';
+const COMBINED_DIGEST = 'ce86a22af6e8705f';
 
 describe('simulation fingerprint', () => {
   it('keeps every scripted physics trajectory bit-exact', () => {
