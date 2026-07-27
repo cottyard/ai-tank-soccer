@@ -8,7 +8,7 @@ import {
 } from '../src/ai/runtimeOpponentLeague';
 import { createExploringStrategy, generateValueSamples } from '../src/ai/valueTraining';
 import {
-  VALUE_WEIGHT_COUNT,
+  valueWeightCount,
   createValueAdamMoments,
   createValueWeights,
   trainValueBatch,
@@ -45,6 +45,11 @@ export type ValueTrainingCliOptions = {
   holdoutFraction: number;
   workers: number;
   seed: number;
+  augmented: boolean;
+  forksPerMatch: number;
+  forkRolloutFrames: number;
+  forkPlayoutFrames: number;
+  forkWeight: number;
 };
 
 type GenerationRequest = {
@@ -55,6 +60,11 @@ type GenerationRequest = {
   commitDecisions: number;
   decayFrames: number;
   seed: number;
+  augmented: boolean;
+  forksPerMatch: number;
+  forkRolloutFrames: number;
+  forkPlayoutFrames: number;
+  forkWeight: number;
 };
 
 const OPPONENT_MIX: RuntimeOpponentKind[] = [
@@ -78,7 +88,12 @@ export function parseValueTrainingArgs(argv: readonly string[]): ValueTrainingCl
     decayFrames: numberArg(argv, '--decay-frames', 150),
     holdoutFraction: numberArg(argv, '--holdout', 0.15),
     workers: positiveIntegerArg(argv, '--workers', Math.max(1, cpus().length - 2)),
-    seed: positiveIntegerArg(argv, '--seed', 20260726)
+    seed: positiveIntegerArg(argv, '--seed', 20260726),
+    augmented: argv.includes('--augmented'),
+    forksPerMatch: nonNegativeIntegerArg(argv, '--forks-per-match', 0),
+    forkRolloutFrames: positiveIntegerArg(argv, '--fork-rollout-frames', 18),
+    forkPlayoutFrames: positiveIntegerArg(argv, '--fork-playout-frames', 600),
+    forkWeight: numberArg(argv, '--fork-weight', 100)
   };
 }
 
@@ -109,7 +124,15 @@ export function generateSampleShard(request: GenerationRequest): ValueSample[] {
       seed,
       scenario: 0,
       frames: request.frames,
-      decayFrames: request.decayFrames
+      decayFrames: request.decayFrames,
+      augmented: request.augmented,
+      forksPerMatch: request.forksPerMatch,
+      forkRolloutFrames: request.forkRolloutFrames,
+      forkPlayoutFrames: request.forkPlayoutFrames,
+      forkWeight: request.forkWeight,
+      forkCandidate: candidate,
+      forkOpponent: opponent,
+      forkSeed: seed ^ request.seed ^ 0x51f15e
     }));
   });
 
@@ -132,7 +155,12 @@ async function generateSamples(
     explorationRate: options.explorationRate,
     commitDecisions: options.commitDecisions,
     decayFrames: options.decayFrames,
-    seed: options.seed
+    seed: options.seed,
+    augmented: options.augmented,
+    forksPerMatch: options.forksPerMatch,
+    forkRolloutFrames: options.forkRolloutFrames,
+    forkPlayoutFrames: options.forkPlayoutFrames,
+    forkWeight: options.forkWeight
   })));
 
   return results.flat();
@@ -163,15 +191,20 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const holdoutSize = Math.floor(shuffled.length * options.holdoutFraction);
   const holdout = shuffled.slice(0, holdoutSize);
   const training = shuffled.slice(holdoutSize);
+  const forked = samples.filter((sample) => sample.weight !== undefined);
 
   console.log(
     `value-training samples=${samples.length} training=${training.length} holdout=${holdout.length} ` +
+    `inputs=${samples[0]?.inputs.length ?? 0} ` +
     `nonzero=${(samples.filter((sample) => sample.target !== 0).length / Math.max(1, samples.length)).toFixed(3)} ` +
+    `forked=${forked.length} ` +
+    `forkNonzero=${(forked.filter((sample) => sample.target !== 0).length / Math.max(1, forked.length)).toFixed(3)} ` +
     `generationMs=${generationMs}`
   );
 
-  let weights = createValueWeights(options.seed);
-  const moments = createValueAdamMoments();
+  const inputCount = samples[0]?.inputs.length ?? 0;
+  let weights = createValueWeights(inputCount, options.seed);
+  const moments = createValueAdamMoments(inputCount);
   let bestWeights = weights;
   let bestHoldoutLoss = Number.POSITIVE_INFINITY;
 
@@ -218,9 +251,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   writeFileSync(options.outputPath, JSON.stringify({
     schemaVersion: 1,
     kind: 'value-network',
-    inputCount: 36,
+    inputCount,
     hiddenLayerSizes: [32, 32],
-    weightCount: VALUE_WEIGHT_COUNT,
+    weightCount: valueWeightCount(inputCount),
     holdoutLoss: bestHoldoutLoss,
     baselineLoss,
     options,
@@ -230,10 +263,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 }
 
 function meanSquare(samples: readonly ValueSample[]): number {
-  if (samples.length === 0) {
+  const totalWeight = samples.reduce((sum, sample) => sum + (sample.weight ?? 1), 0);
+  if (totalWeight === 0) {
     return 0;
   }
-  return samples.reduce((sum, sample) => sum + sample.target * sample.target, 0) / samples.length;
+  return samples.reduce(
+    (sum, sample) => sum + (sample.weight ?? 1) * sample.target * sample.target,
+    0
+  ) / totalWeight;
 }
 
 function shuffle<T>(values: readonly T[], seed: number): T[] {
@@ -270,6 +307,11 @@ function numberArg(argv: readonly string[], name: string, fallback: number): num
 function positiveIntegerArg(argv: readonly string[], name: string, fallback: number): number {
   const value = Number(stringArg(argv, name));
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function nonNegativeIntegerArg(argv: readonly string[], name: string, fallback: number): number {
+  const value = Number(stringArg(argv, name));
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }
 
 if (

@@ -1,7 +1,18 @@
-export const VALUE_INPUT_COUNT = 36;
 export const VALUE_HIDDEN_LAYER_SIZES = [32, 32] as const;
-const VALUE_LAYER_SIZES = [VALUE_INPUT_COUNT, ...VALUE_HIDDEN_LAYER_SIZES, 1] as const;
-export const VALUE_WEIGHT_COUNT = layerWeightCount(VALUE_LAYER_SIZES);
+
+/**
+ * The network shape is derived from the length of the input vector, so a model
+ * trained on the plain policy features and one trained on those features plus
+ * the heuristic breakdown can coexist without a second code path. `evaluateValue`
+ * checks that the supplied weights match the shape the inputs imply.
+ */
+export function valueLayerSizes(inputCount: number): number[] {
+  return [inputCount, ...VALUE_HIDDEN_LAYER_SIZES, 1];
+}
+
+export function valueWeightCount(inputCount: number): number {
+  return layerWeightCount(valueLayerSizes(inputCount));
+}
 
 /**
  * State value network.
@@ -50,12 +61,13 @@ export type TrainValueResult = {
   moments: ValueAdamMoments;
 };
 
-export function createValueWeights(seed = 1): number[] {
+export function createValueWeights(inputCount: number, seed = 1): number[] {
+  const sizes = valueLayerSizes(inputCount);
   const random = createSeededRandom(seed);
   const weights: number[] = [];
-  for (let layer = 0; layer < VALUE_LAYER_SIZES.length - 1; layer += 1) {
-    const inputCount = VALUE_LAYER_SIZES[layer];
-    const outputCount = VALUE_LAYER_SIZES[layer + 1];
+  for (let layer = 0; layer < sizes.length - 1; layer += 1) {
+    const inputCount = sizes[layer];
+    const outputCount = sizes[layer + 1];
     // Xavier-style scale keeps early tanh activations off the saturated tails.
     const scale = Math.sqrt(6 / (inputCount + outputCount));
     for (let output = 0; output < outputCount; output += 1) {
@@ -68,17 +80,17 @@ export function createValueWeights(seed = 1): number[] {
   return weights;
 }
 
-export function createValueAdamMoments(): ValueAdamMoments {
+export function createValueAdamMoments(inputCount: number): ValueAdamMoments {
+  const count = valueWeightCount(inputCount);
   return {
-    first: Array.from({ length: VALUE_WEIGHT_COUNT }, () => 0),
-    second: Array.from({ length: VALUE_WEIGHT_COUNT }, () => 0),
+    first: Array.from({ length: count }, () => 0),
+    second: Array.from({ length: count }, () => 0),
     step: 0
   };
 }
 
 export function evaluateValue(inputs: readonly number[], weights: ValueWeights): number {
-  validateInputs(inputs);
-  validateWeights(weights);
+  validateShape(inputs, weights);
   return forwardPass(inputs, weights).output;
 }
 
@@ -96,13 +108,12 @@ export function valueLossGradients(
   samples: readonly ValueSample[],
   weights: ValueWeights
 ): { gradients: number[]; loss: number; totalWeight: number } {
-  validateWeights(weights);
-  const gradients = Array.from({ length: VALUE_WEIGHT_COUNT }, () => 0);
+  const gradients = Array.from({ length: weights.length }, () => 0);
   let loss = 0;
   let totalWeight = 0;
 
   for (const sample of samples) {
-    validateInputs(sample.inputs);
+    validateShape(sample.inputs, weights);
     const sampleWeight = sample.weight ?? 1;
     if (sampleWeight === 0) {
       continue;
@@ -131,14 +142,14 @@ export function trainValueBatch(
   weights: ValueWeights,
   options: TrainValueOptions = {}
 ): TrainValueResult {
-  validateWeights(weights);
   const learningRate = options.learningRate ?? 0.002;
   const l2 = options.l2 ?? 0;
   const gradientClip = options.gradientClip ?? 4;
   const beta1 = options.beta1 ?? 0.9;
   const beta2 = options.beta2 ?? 0.999;
   const epsilon = options.epsilon ?? 1e-8;
-  const moments = options.moments ?? createValueAdamMoments();
+  const moments = options.moments ??
+    createValueAdamMoments(samples[0]?.inputs.length ?? 0);
 
   const { gradients, loss, totalWeight } = valueLossGradients(samples, weights);
   if (totalWeight === 0) {
@@ -150,7 +161,7 @@ export function trainValueBatch(
   const biasCorrection1 = 1 - beta1 ** step;
   const biasCorrection2 = 1 - beta2 ** step;
 
-  for (let index = 0; index < VALUE_WEIGHT_COUNT; index += 1) {
+  for (let index = 0; index < weights.length; index += 1) {
     let gradient = gradients[index] + l2 * next[index];
     gradient = Math.max(-gradientClip, Math.min(gradientClip, gradient));
     moments.first[index] = beta1 * moments.first[index] + (1 - beta1) * gradient;
@@ -170,13 +181,14 @@ type ForwardPass = {
 };
 
 function forwardPass(inputs: readonly number[], weights: ValueWeights): ForwardPass {
+  const sizes = valueLayerSizes(inputs.length);
   const activations: number[][] = [[...inputs]];
   let current = [...inputs];
 
-  for (let layer = 0; layer < VALUE_LAYER_SIZES.length - 1; layer += 1) {
-    const inputCount = VALUE_LAYER_SIZES[layer];
-    const outputCount = VALUE_LAYER_SIZES[layer + 1];
-    const offset = layerOffset(layer);
+  for (let layer = 0; layer < sizes.length - 1; layer += 1) {
+    const inputCount = sizes[layer];
+    const outputCount = sizes[layer + 1];
+    const offset = layerOffset(sizes, layer);
     const next = Array.from({ length: outputCount }, (_unused, output) => {
       const rowOffset = offset + output * (inputCount + 1);
       let sum = weights[rowOffset + inputCount];
@@ -200,11 +212,12 @@ function accumulateGradients(
 ): void {
   // Every layer, including the head, uses tanh, so d/dx tanh = 1 - tanh^2.
   let delta = [outputGradient * (1 - pass.output * pass.output)];
+  const sizes = valueLayerSizes(pass.activations[0].length);
 
-  for (let layer = VALUE_LAYER_SIZES.length - 2; layer >= 0; layer -= 1) {
-    const inputCount = VALUE_LAYER_SIZES[layer];
-    const outputCount = VALUE_LAYER_SIZES[layer + 1];
-    const offset = layerOffset(layer);
+  for (let layer = sizes.length - 2; layer >= 0; layer -= 1) {
+    const inputCount = sizes[layer];
+    const outputCount = sizes[layer + 1];
+    const offset = layerOffset(sizes, layer);
     const layerInputs = pass.activations[layer];
     const nextDelta = layer > 0 ? Array.from({ length: inputCount }, () => 0) : [];
 
@@ -230,22 +243,22 @@ function accumulateGradients(
   }
 }
 
-function validateInputs(inputs: readonly number[]): void {
-  if (inputs.length !== VALUE_INPUT_COUNT) {
-    throw new Error(`Expected ${VALUE_INPUT_COUNT} value inputs, received ${inputs.length}`);
+function validateShape(inputs: readonly number[], weights: ValueWeights): void {
+  if (inputs.length === 0) {
+    throw new Error('Value inputs must not be empty');
+  }
+  const expected = valueWeightCount(inputs.length);
+  if (weights.length !== expected) {
+    throw new Error(
+      `Expected ${expected} value weights for ${inputs.length} inputs, received ${weights.length}`
+    );
   }
 }
 
-function validateWeights(weights: ValueWeights): void {
-  if (weights.length !== VALUE_WEIGHT_COUNT) {
-    throw new Error(`Expected ${VALUE_WEIGHT_COUNT} value weights, received ${weights.length}`);
-  }
-}
-
-function layerOffset(layer: number): number {
+function layerOffset(sizes: readonly number[], layer: number): number {
   let offset = 0;
   for (let index = 0; index < layer; index += 1) {
-    offset += VALUE_LAYER_SIZES[index + 1] * (VALUE_LAYER_SIZES[index] + 1);
+    offset += sizes[index + 1] * (sizes[index] + 1);
   }
   return offset;
 }

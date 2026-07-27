@@ -41,12 +41,12 @@ const PHYSICS_DIGESTS: Record<string, string> = {
 };
 
 const RUNTIME_DIGESTS: Record<string, string> = {
-  'runtime/seed-19': '260134b087503bc9',
+  'runtime/seed-19': 'fb1c455b6e2ee3e3',
   'runtime/seed-31': 'd80e33c46e79ea4a',
-  'runtime/seed-71': 'cc76a10fd0ad612a'
+  'runtime/seed-71': 'f9eb02228aa18c32'
 };
 
-const COMBINED_DIGEST = 'ce86a22af6e8705f';
+const COMBINED_DIGEST = '45bc40acd79587f7';
 
 describe('simulation fingerprint', () => {
   it('keeps every scripted physics trajectory bit-exact', () => {

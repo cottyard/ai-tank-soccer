@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  VALUE_INPUT_COUNT,
-  VALUE_WEIGHT_COUNT,
   createValueAdamMoments,
   createValueWeights,
   evaluateValue,
   trainValueBatch,
   valueLossGradients,
+  valueWeightCount,
   type ValueSample
 } from '../src/ai/valueNetwork';
+
+const VALUE_INPUT_COUNT = 36;
+const VALUE_WEIGHT_COUNT = valueWeightCount(VALUE_INPUT_COUNT);
 
 function seededInputs(seed: number): number[] {
   let state = seed >>> 0;
@@ -20,14 +22,14 @@ function seededInputs(seed: number): number[] {
 
 describe('value network', () => {
   it('creates deterministic weights of the declared size', () => {
-    const weights = createValueWeights(7);
+    const weights = createValueWeights(VALUE_INPUT_COUNT, 7);
     expect(weights).toHaveLength(VALUE_WEIGHT_COUNT);
-    expect(createValueWeights(7)).toEqual(weights);
-    expect(createValueWeights(8)).not.toEqual(weights);
+    expect(createValueWeights(VALUE_INPUT_COUNT, 7)).toEqual(weights);
+    expect(createValueWeights(VALUE_INPUT_COUNT, 8)).not.toEqual(weights);
   });
 
   it('produces a bounded scalar', () => {
-    const weights = createValueWeights(3).map((value) => value * 40);
+    const weights = createValueWeights(VALUE_INPUT_COUNT, 3).map((value) => value * 40);
     for (let seed = 1; seed <= 24; seed += 1) {
       const value = evaluateValue(seededInputs(seed), weights);
       expect(Number.isFinite(value)).toBe(true);
@@ -37,15 +39,16 @@ describe('value network', () => {
   });
 
   it('rejects malformed inputs and weights', () => {
-    const weights = createValueWeights(1);
-    expect(() => evaluateValue([1, 2, 3], weights)).toThrow(/36 value inputs/);
-    expect(() => evaluateValue(seededInputs(1), [1, 2, 3])).toThrow(/value weights/);
+    const weights = createValueWeights(VALUE_INPUT_COUNT, 1);
+    expect(() => evaluateValue([1, 2, 3], weights)).toThrow(/value weights for 3 inputs/);
+    expect(() => evaluateValue(seededInputs(1), [1, 2, 3])).toThrow(/value weights for 36 inputs/);
+    expect(() => evaluateValue([], weights)).toThrow(/must not be empty/);
   });
 
   it('matches a finite-difference gradient', () => {
     // A wrong backprop would still train to *something*, so check the analytic
     // gradient against numerical differentiation directly.
-    const weights = createValueWeights(11);
+    const weights = createValueWeights(VALUE_INPUT_COUNT, 11);
     const samples: ValueSample[] = [
       { inputs: seededInputs(2), target: 0.7 },
       { inputs: seededInputs(3), target: -0.4 },
@@ -75,8 +78,8 @@ describe('value network', () => {
       return { inputs, target: Math.tanh(inputs[0] * 2) };
     });
 
-    let weights = createValueWeights(5);
-    const moments = createValueAdamMoments();
+    let weights = createValueWeights(VALUE_INPUT_COUNT, 5);
+    const moments = createValueAdamMoments(VALUE_INPUT_COUNT);
     const initialLoss = valueLossGradients(samples, weights).loss;
 
     let loss = initialLoss;
@@ -93,7 +96,7 @@ describe('value network', () => {
   it('honours sample weights', () => {
     const inputs = seededInputs(21);
     const ignored: ValueSample[] = [{ inputs, target: 1, weight: 0 }];
-    const weights = createValueWeights(9);
+    const weights = createValueWeights(VALUE_INPUT_COUNT, 9);
     const result = trainValueBatch(ignored, weights, { learningRate: 0.05 });
     expect(result.weights).toEqual([...weights]);
     expect(result.loss).toBe(0);

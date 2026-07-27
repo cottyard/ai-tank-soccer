@@ -16,7 +16,8 @@ import {
   type TacticalRolloutTuning,
   type TacticalStateValue
 } from './tacticalRollout';
-import { evaluateValue, type ValueWeights } from './valueNetwork';
+import { evaluateValue, valueWeightCount, type ValueWeights } from './valueNetwork';
+import { AUGMENTED_VALUE_INPUT_COUNT, valueInputs } from './valueFeatures';
 import { evaluatePosition } from './positionEvaluation';
 import { BUNDLED_VALUE_BLEND, BUNDLED_VALUE_WEIGHTS } from './bundledValueModel';
 
@@ -116,6 +117,7 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
     ...options.tacticalTuning
   };
   const valueWeights = options.valueWeights ?? BUNDLED_VALUE_WEIGHTS;
+  const augmentedValue = valueWeights.length === valueWeightCount(AUGMENTED_VALUE_INPUT_COUNT);
   // A pure outcome-prediction value has weak local gradient over an 18-frame
   // horizon, so the blend keeps the dense heuristic shaping and adds the
   // learned outcome signal on top of it.
@@ -131,7 +133,8 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
           return 0;
         }
         const learned =
-          evaluateValue(extractTankInputs(state, team, tank), valueWeights) * VALUE_GOAL_SCALE;
+          evaluateValue(valueInputs(state, team, tank, augmentedValue), valueWeights) *
+          VALUE_GOAL_SCALE;
         if (valueBlend >= 1) {
           return learned;
         }
