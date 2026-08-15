@@ -3,7 +3,12 @@ import { FIELD, cloneState, type GameState, type Tank, type Team } from '../game
 import { stepGame } from '../game/simulation';
 import type { CommandMap } from '../game/strategy';
 import { POLICY_ACTION_COUNT, actionIndexToCommand } from './policyActions';
-import { evaluatePosition, evaluatePositionDelta } from './positionEvaluation';
+import {
+  evaluatePosition,
+  evaluatePositionDelta,
+  type PositionEvaluationTerm,
+  type PositionEvaluationTermScales
+} from './positionEvaluation';
 
 export type TacticalActionChoice = {
   actionIndex: number;
@@ -46,6 +51,8 @@ export type TacticalRolloutTuning = {
   valueModel?: 'heuristic' | 'learned' | 'blend';
   /** Weight on the learned value when `valueModel` is `blend`. */
   valueBlend?: number;
+  /** Per-term multipliers used to ablate the hand-authored terminal evaluator. */
+  positionTermScales?: PositionEvaluationTermScales;
 };
 
 export type TacticalOpponentPolicy = (state: Readonly<GameState>, team: Team) => number;
@@ -95,7 +102,7 @@ function stateTotal(
   if ((model === 'learned' || model === 'blend') && options.stateValue) {
     return options.stateValue(state, options.team);
   }
-  return evaluatePosition(state, options.team).total;
+  return evaluatePosition(state, options.team, options.tuning?.positionTermScales).total;
 }
 
 export function chooseTacticalAction(options: TacticalActionOptions): TacticalActionChoice {
@@ -205,11 +212,16 @@ function scoreTacticalAction(options: ScoreOptions): number {
   }
 
   const after = stateTotal(options, simulated);
-  const delta = evaluatePositionDelta(simulated, initial, options.team);
+  const delta = evaluatePositionDelta(
+    simulated,
+    initial,
+    options.team,
+    options.tuning?.positionTermScales
+  );
   const action = actionIndexToCommand(options.actionIndex);
   const trackCost = Math.abs(action.leftTrack) + Math.abs(action.rightTrack);
   return after - before +
-    delta.breakdown.cornerEscape * 0.45 +
+    delta.breakdown.cornerEscape * 0.45 * positionTermScale(options, 'cornerEscape') +
     -trackCost * 0.004;
 }
 
@@ -278,15 +290,27 @@ function scoreTacticalActionSequencePair(
   }
 
   const after = stateTotal(options, simulated);
-  const delta = evaluatePositionDelta(simulated, initial, options.team);
+  const delta = evaluatePositionDelta(
+    simulated,
+    initial,
+    options.team,
+    options.tuning?.positionTermScales
+  );
   const firstAction = actionIndexToCommand(options.actionIndex);
   const followupAction = actionIndexToCommand(options.followupActionIndex);
   const trackCost =
     (Math.abs(firstAction.leftTrack) + Math.abs(firstAction.rightTrack)) * 0.55 +
     (Math.abs(followupAction.leftTrack) + Math.abs(followupAction.rightTrack)) * 0.45;
   return after - before +
-    delta.breakdown.cornerEscape * 0.45 +
+    delta.breakdown.cornerEscape * 0.45 * positionTermScale(options, 'cornerEscape') +
     -trackCost * 0.004;
+}
+
+function positionTermScale(
+  options: Pick<TacticalActionOptions, 'tuning'>,
+  term: PositionEvaluationTerm
+): number {
+  return options.tuning?.positionTermScales?.[term] ?? 1;
 }
 
 function isSlowPinnedAttackingCorner(state: Readonly<GameState>, team: Team): boolean {

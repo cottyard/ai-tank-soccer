@@ -39,6 +39,35 @@ describe('position evaluation', () => {
     expect(shotScore.total).toBeGreaterThan(stalledScore.total + 0.75);
   });
 
+  it('can ablate one term without changing the reported breakdown', () => {
+    const shot = createNearGoalLaneState();
+    shot.ball.velocity = { x: 285, y: 0 };
+
+    const baseline = evaluatePosition(shot, 'red');
+    const ablated = evaluatePosition(shot, 'red', { finishThreat: 0 });
+
+    expect(ablated.breakdown).toEqual(baseline.breakdown);
+    expect(baseline.total - ablated.total).toBeCloseTo(
+      baseline.breakdown.finishThreat * 1.05,
+      10
+    );
+  });
+
+  it('applies the same term ablation to delta weights', () => {
+    const stalled = createNearGoalLaneState();
+    const shot = createNearGoalLaneState();
+    shot.ball.velocity = { x: 285, y: 0 };
+
+    const baseline = evaluatePositionDelta(shot, stalled, 'red');
+    const ablated = evaluatePositionDelta(shot, stalled, 'red', { finishThreat: 0 });
+
+    expect(ablated.breakdown).toEqual(baseline.breakdown);
+    expect(baseline.total - ablated.total).toBeCloseTo(
+      baseline.breakdown.finishThreat * 1.25,
+      10
+    );
+  });
+
   it('penalizes a dangerous ball in the own goal lane', () => {
     const danger = createInitialState();
     danger.ball.position = { x: 150, y: FIELD.width / 2 };

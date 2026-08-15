@@ -142,6 +142,16 @@ describe('benchmark policy specs', () => {
     });
   });
 
+  it('parses position-evaluation term scales used for heuristic ablation', () => {
+    expect(parsePolicySpec('accepted-runtime@progress=0+stamina=0')).toEqual({
+      id: 'accepted-runtime@progress=0+stamina=0',
+      kind: 'accepted-runtime',
+      tuning: {
+        positionTermScales: { ballProgress: 0, stamina: 0 }
+      }
+    });
+  });
+
   it('rejects unknown kinds and tuning keys', () => {
     expect(() => parsePolicySpec('nonsense')).toThrow(/Unknown policy kind/);
     expect(() => parsePolicySpec('accepted-runtime@depth=4')).toThrow(/Unknown tuning key/);

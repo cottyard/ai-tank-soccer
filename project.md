@@ -61,6 +61,7 @@ Do not retry these without changing the underlying premise. Each was measured wi
 - **A purely learned terminal value.** Scores `0.3775`, goals `27-182`. Outcome prediction has almost no gradient over an 18-frame horizon, and the search actively seeks states where the model is wrong. The heuristic must supply dense local shaping; the learned model is only useful as a small blended correction.
 - **Committed-action exploration for value labels.** Holding a random action for a whole rollout horizon during data generation was meant to match the states the search actually queries. It halved the label variance instead (`0.0346` against `0.0696`): disrupting play that hard stops goals happening, so the labels stop carrying outcome signal. The resulting model was worse at every blend. Fix the state distribution without destroying the outcomes.
 - **Raising the blend weight on the on-policy generation 2 model.** `0.25` and `0.5` were both measurably worse than `0.08`, monotonically. Fork-labelled data changed that premise and made `0.25` the new measured default; do not transfer blend ceilings between models trained on different state distributions.
+- **Single-term hand-evaluation ablation.** The benchmark now supports zeroing each of the ten terminal-evaluation terms without changing the default runtime. On 200 paired scenarios, removing `goal` regressed by `-0.0575`, CI `[-0.0725,-0.0425]`; each other term was unresolved and all intervals crossed zero. A six-term cleanup selected by a 200-scenario combination screen (`progress`, `lane`, `threat`, `contest`, `danger`, `corner`) scored `+0.0063`, CI `[-0.0116,0.0241]`; after fixing that candidate it scored `+0.0068`, CI `[-0.0019,0.0155]` on 700 fresh scenarios, then `-0.0050`, CI `[-0.0109,0.0009]` on 1600 more fresh scenarios. This is not a strength result and was not promoted; do not retry the same ablation without a different data premise.
 - **A third self-distillation generation.** Relabelling with generation 2 and the same 900-match recipe produced a candidate at `0.4880`, CI `[0.4778,0.4982]` against generation 2. Changing the training seed and start states was no better at `0.4840`. The loop saturated at generation 2; do not promote generation 3 or turn the same crank again without changing the data premise.
 - **Feeding the heuristic breakdown to the value network.** Appending all ten terms from `evaluatePosition` improved supervised holdout loss but not decision quality. The augmented model scored `0.3730` as a pure evaluator, essentially the same collapse as the plain model's `0.3775`, and its `0.08` blend scored `0.4810`, CI `[0.4651,0.4969]` against generation 2. The blend ceiling is not caused by the 36 policy inputs omitting the heuristic's information.
 - **Broad position-evaluation surgery.** Lowering the zero-speed `finishThreatScore` floor, narrowing the attacking-corner reward, and penalising deep non-scoring finish states each regressed the gate.
@@ -105,6 +106,7 @@ npx tsx scripts/benchmark-runtime.ts --policies <candidate> --scenarios 700 --sa
 
 # Ablate. Variants take kind@key=value+key=value:
 #   frames, margin, force, opp, value, blend
+#   goal, progress, lane, threat, velocity, contest, possession, danger, corner, stamina
 npx tsx scripts/benchmark-runtime.ts `
   --policies accepted-runtime,accepted-runtime@value=0,accepted-runtime@blend=0.15 `
   --opponent traditional --scenarios 400
@@ -131,10 +133,9 @@ Diagnostics: `scripts/diagnose-runtime-failures.ts`, `scripts/inspect-runtime-ma
 
 ## Next Work
 
-1. **Ablate the accumulated heuristic constants on the benchmark.** Many were fitted to individual matches on the 20-match gate and cannot have been resolvable. Remove the ones that do not survive; expect several to be neutral.
-2. **Make fork sampling match the actual search trigger and variable horizon.** The successful first pass samples all decision states and always advances 18 frames. Restricting future forks to states where rollout really runs, including its 36/72/120-frame and sequence branches, is the next data-quality hypothesis; benchmark it against this generation rather than assuming extra fidelity helps.
-3. **Do not repeat plain self-distillation generation 3, heuristic-augmented inputs, rollout depth, trigger coverage, or another guarded rule without changing their failed premise.** See what is measured dead.
-4. Native or WASM porting is not justified for the playable AI while runtime headroom is ~100x. Revisit only if offline label generation becomes the throughput constraint, and only with cross-language parity added to the fingerprint suite.
+1. **Make fork sampling match the actual search trigger and variable horizon.** The successful first pass samples all decision states and always advances 18 frames. Restricting future forks to states where rollout really runs, including its 36/72/120-frame and sequence branches, is the next data-quality hypothesis; benchmark it against this generation rather than assuming extra fidelity helps.
+2. **Do not repeat heuristic-term ablation, plain self-distillation generation 3, heuristic-augmented inputs, rollout depth, trigger coverage, or another guarded rule without changing their failed premise.** See what is measured dead.
+3. Native or WASM porting is not justified for the playable AI while runtime headroom is ~100x. Revisit only if offline label generation becomes the throughput constraint, and only with cross-language parity added to the fingerprint suite.
 
 ## Repository Hygiene
 

@@ -138,7 +138,8 @@ export function createNeuralStrategy(options: NeuralStrategyOptions = {}): Strat
         if (valueBlend >= 1) {
           return learned;
         }
-        return valueBlend * learned + (1 - valueBlend) * evaluatePosition(state, team).total;
+        return valueBlend * learned +
+          (1 - valueBlend) * evaluatePosition(state, team, tacticalTuning.positionTermScales).total;
       }
     : undefined;
 

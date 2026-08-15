@@ -16,6 +16,7 @@ import {
 } from '../src/ai/runtimeOpponentLeague';
 import { createNeuralStrategy } from '../src/ai/neuralStrategy';
 import type { TacticalRolloutTuning } from '../src/ai/tacticalRollout';
+import type { PositionEvaluationTerm } from '../src/ai/positionEvaluation';
 import type { NeuralWeights } from '../src/ai/neuralWeights';
 import type { Strategy } from '../src/game/strategy';
 import { loadWeightsPayload } from './coach-neural';
@@ -34,13 +35,26 @@ declare const process: {
  */
 
 /**
- * A policy under test: a league opponent kind, optionally with search-shape
- * overrides written as `kind@frames=36,margin=0.05`.
+ * A policy under test: a league opponent kind, optionally with search-shape or
+ * terminal-evaluation overrides written as `kind@frames=36+progress=0`.
  */
 export type BenchmarkPolicySpec = {
   id: string;
   kind: RuntimeOpponentKind;
   tuning?: TacticalRolloutTuning;
+};
+
+const POSITION_TERM_TUNING_KEYS: Readonly<Record<string, PositionEvaluationTerm>> = {
+  goal: 'goal',
+  progress: 'ballProgress',
+  lane: 'shotLane',
+  threat: 'finishThreat',
+  velocity: 'shotVelocity',
+  contest: 'contest',
+  possession: 'possession',
+  danger: 'ownDanger',
+  corner: 'cornerEscape',
+  stamina: 'stamina'
 };
 
 export type BenchmarkCliOptions = {
@@ -270,6 +284,11 @@ export function parsePolicySpec(value: string): BenchmarkPolicySpec {
     } else if (key === 'blend') {
       tuning.valueModel = 'blend';
       tuning.valueBlend = parsed;
+    } else if (POSITION_TERM_TUNING_KEYS[key]) {
+      tuning.positionTermScales = {
+        ...tuning.positionTermScales,
+        [POSITION_TERM_TUNING_KEYS[key]]: parsed
+      };
     } else {
       throw new Error(`Unknown tuning key "${key}" in policy spec: ${value}`);
     }

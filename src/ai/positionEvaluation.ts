@@ -13,12 +13,19 @@ export type PositionBreakdown = {
   stamina: number;
 };
 
+export type PositionEvaluationTerm = keyof PositionBreakdown;
+export type PositionEvaluationTermScales = Partial<Record<PositionEvaluationTerm, number>>;
+
 export type PositionEvaluation = {
   total: number;
   breakdown: PositionBreakdown;
 };
 
-export function evaluatePosition(state: Readonly<GameState>, team: Team): PositionEvaluation {
+export function evaluatePosition(
+  state: Readonly<GameState>,
+  team: Team,
+  termScales?: Readonly<PositionEvaluationTermScales>
+): PositionEvaluation {
   const sign = team === 'red' ? 1 : -1;
   const ballAttackX = attackX(team, state.ball.position.x);
   const lane = goalLaneScore(state.ball.position.y);
@@ -50,7 +57,18 @@ export function evaluatePosition(state: Readonly<GameState>, team: Team): Positi
     cornerEscape,
     stamina
   };
-  const total =
+  // Preserve the original operation sequence on the accepted default path.
+  const total = termScales ?
+    breakdown.goal * 12 * termScale(termScales, 'goal') +
+    breakdown.ballProgress * 1.7 * termScale(termScales, 'ballProgress') +
+    breakdown.shotLane * 0.95 * termScale(termScales, 'shotLane') +
+    breakdown.finishThreat * 1.05 * termScale(termScales, 'finishThreat') +
+    breakdown.shotVelocity * 0.42 * termScale(termScales, 'shotVelocity') +
+    breakdown.contest * 0.7 * termScale(termScales, 'contest') +
+    breakdown.possession * 1.1 * termScale(termScales, 'possession') -
+    breakdown.ownDanger * 2.2 * termScale(termScales, 'ownDanger') +
+    breakdown.cornerEscape * 0.85 * termScale(termScales, 'cornerEscape') +
+    breakdown.stamina * 0.22 * termScale(termScales, 'stamina') :
     breakdown.goal * 12 +
     breakdown.ballProgress * 1.7 +
     breakdown.shotLane * 0.95 +
@@ -68,7 +86,8 @@ export function evaluatePosition(state: Readonly<GameState>, team: Team): Positi
 export function evaluatePositionDelta(
   state: Readonly<GameState>,
   initial: Readonly<GameState>,
-  team: Team
+  team: Team,
+  termScales?: Readonly<PositionEvaluationTermScales>
 ): PositionEvaluation {
   const after = evaluatePosition(state, team);
   const before = evaluatePosition(initial, team);
@@ -85,7 +104,18 @@ export function evaluatePositionDelta(
     cornerEscape,
     stamina: after.breakdown.stamina - before.breakdown.stamina
   };
-  const total =
+  // Preserve the original operation sequence on the accepted default path.
+  const total = termScales ?
+    breakdown.goal * 12 * termScale(termScales, 'goal') +
+    breakdown.ballProgress * 1.9 * termScale(termScales, 'ballProgress') +
+    breakdown.shotLane * 1.05 * termScale(termScales, 'shotLane') +
+    breakdown.finishThreat * 1.25 * termScale(termScales, 'finishThreat') +
+    breakdown.shotVelocity * 0.5 * termScale(termScales, 'shotVelocity') +
+    breakdown.contest * 0.85 * termScale(termScales, 'contest') +
+    breakdown.possession * 1.25 * termScale(termScales, 'possession') -
+    breakdown.ownDanger * 2.45 * termScale(termScales, 'ownDanger') +
+    breakdown.cornerEscape * 1.15 * termScale(termScales, 'cornerEscape') +
+    breakdown.stamina * 0.18 * termScale(termScales, 'stamina') :
     breakdown.goal * 12 +
     breakdown.ballProgress * 1.9 +
     breakdown.shotLane * 1.05 +
@@ -98,6 +128,13 @@ export function evaluatePositionDelta(
     breakdown.stamina * 0.18;
 
   return { total, breakdown };
+}
+
+function termScale(
+  scales: Readonly<PositionEvaluationTermScales>,
+  term: PositionEvaluationTerm
+): number {
+  return scales[term] ?? 1;
 }
 
 function finishThreatScore(
